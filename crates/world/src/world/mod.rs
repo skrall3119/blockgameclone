@@ -583,6 +583,272 @@ impl World {
         &self.config
     }
 
+    /// Update the world configuration dynamically
+    /// This method validates the new configuration and adapts world behavior accordingly
+    pub fn update_config(&mut self, new_config: WorldConfig) -> WorldResult<()> {
+        // Validate the new configuration first
+        new_config.validate()?;
+        
+        // Check if the configuration change requires a restart
+        if self.config.requires_restart(&new_config) {
+            return Err(WorldError::InvalidConfiguration {
+                parameter: "configuration".to_string(),
+                value: "incompatible_change".to_string(),
+                reason: "Configuration change requires world restart".to_string(),
+            });
+        }
+        
+        // Check compatibility
+        if !new_config.is_compatible_with(&self.config) {
+            return Err(WorldError::InvalidConfiguration {
+                parameter: "configuration".to_string(),
+                value: "incompatible".to_string(),
+                reason: "New configuration is not compatible with current configuration".to_string(),
+            });
+        }
+        
+        // Store the old configuration for comparison
+        let old_config = self.config.clone();
+        
+        // Apply the new configuration
+        self.config = new_config;
+        
+        // Adapt behavior based on configuration changes
+        self.adapt_to_config_changes(&old_config)?;
+        
+        Ok(())
+    }
+
+    /// Update configuration with automatic migration support
+    /// This method will migrate the configuration to the latest version if needed
+    pub fn update_config_with_migration(&mut self, mut new_config: WorldConfig) -> WorldResult<()> {
+        // Migrate the configuration to the latest version if needed
+        let was_migrated = new_config.migrate_to_latest()?;
+        
+        if was_migrated {
+            // Log or track that migration occurred
+            // In a real implementation, this might log the migration
+        }
+        
+        // Apply the migrated configuration
+        self.update_config(new_config)
+    }
+
+    /// Get configuration differences between current and a new configuration
+    pub fn get_config_differences(&self, new_config: &WorldConfig) -> Vec<String> {
+        self.config.get_differences(new_config)
+    }
+
+    /// Check if a configuration change would require a world restart
+    pub fn would_require_restart(&self, new_config: &WorldConfig) -> bool {
+        self.config.requires_restart(new_config)
+    }
+
+    /// Validate configuration compatibility without applying changes
+    pub fn validate_config_change(&self, new_config: &WorldConfig) -> WorldResult<Vec<String>> {
+        // Validate the new configuration
+        new_config.validate()?;
+        
+        // Check compatibility
+        if !new_config.is_compatible_with(&self.config) {
+            return Err(WorldError::InvalidConfiguration {
+                parameter: "configuration".to_string(),
+                value: "incompatible".to_string(),
+                reason: "New configuration is not compatible with current configuration".to_string(),
+            });
+        }
+        
+        // Check if restart is required
+        if self.config.requires_restart(new_config) {
+            return Err(WorldError::InvalidConfiguration {
+                parameter: "configuration".to_string(),
+                value: "requires_restart".to_string(),
+                reason: "Configuration change requires world restart".to_string(),
+            });
+        }
+        
+        // Return the list of differences
+        Ok(self.config.get_differences(new_config))
+    }
+
+    /// Apply a configuration update with validation
+    /// This is a convenience method that creates a new config from the current one
+    pub fn apply_config_update<F>(&mut self, update_fn: F) -> WorldResult<()>
+    where
+        F: FnOnce(WorldConfig) -> WorldConfig,
+    {
+        let new_config = update_fn(self.config.clone());
+        self.update_config(new_config)
+    }
+
+    /// Set the render distance and adapt world behavior
+    pub fn set_render_distance(&mut self, distance: u32) -> WorldResult<()> {
+        let new_config = self.config.clone().with_render_distance(distance);
+        self.update_config(new_config)
+    }
+
+    /// Set the maximum number of loaded chunks
+    pub fn set_max_chunks(&mut self, max_chunks: Option<usize>) -> WorldResult<()> {
+        let new_config = self.config.clone().with_max_chunks(max_chunks);
+        self.update_config(new_config)
+    }
+
+    /// Set the chunk unload delay
+    pub fn set_chunk_unload_delay(&mut self, delay: std::time::Duration) -> WorldResult<()> {
+        let new_config = self.config.clone().with_unload_delay(delay);
+        self.update_config(new_config)
+    }
+
+    /// Enable or disable performance monitoring
+    pub fn set_performance_monitoring(&mut self, enabled: bool) -> WorldResult<()> {
+        let new_config = self.config.clone().with_performance_monitoring(enabled);
+        self.update_config(new_config)
+    }
+
+    /// Adapt world behavior when configuration changes
+    fn adapt_to_config_changes(&mut self, old_config: &WorldConfig) -> WorldResult<()> {
+        // Handle render distance changes
+        if self.config.render_distance != old_config.render_distance {
+            self.handle_render_distance_change(old_config.render_distance)?;
+        }
+
+        // Handle max chunks limit changes
+        if self.config.max_chunks_loaded != old_config.max_chunks_loaded {
+            self.handle_max_chunks_change(old_config.max_chunks_loaded)?;
+        }
+
+        // Handle performance monitoring changes
+        if self.config.performance_monitoring != old_config.performance_monitoring {
+            self.handle_performance_monitoring_change()?;
+        }
+
+        // Handle chunk unload delay changes
+        if self.config.chunk_unload_delay != old_config.chunk_unload_delay {
+            self.handle_unload_delay_change()?;
+        }
+
+        Ok(())
+    }
+
+    /// Handle render distance configuration changes
+    fn handle_render_distance_change(&mut self, old_render_distance: u32) -> WorldResult<()> {
+        // If render distance decreased, we might need to unload chunks that are now too far
+        if self.config.render_distance < old_render_distance {
+            // This would typically trigger chunk unloading logic
+            // For now, we just validate that the change is acceptable
+            if self.config.render_distance == 0 {
+                return Err(WorldError::InvalidConfiguration {
+                    parameter: "render_distance".to_string(),
+                    value: self.config.render_distance.to_string(),
+                    reason: "Render distance cannot be zero".to_string(),
+                });
+            }
+        }
+        
+        // Update memory manager if needed based on new render distance
+        let estimated_chunks = ((self.config.render_distance * 2 + 1) as usize).pow(3);
+        if let Some(max_chunks) = self.config.max_chunks_loaded {
+            if estimated_chunks > max_chunks {
+                return Err(WorldError::InvalidConfiguration {
+                    parameter: "render_distance".to_string(),
+                    value: self.config.render_distance.to_string(),
+                    reason: format!("Render distance would require {} chunks but max_chunks is {}", 
+                                  estimated_chunks, max_chunks),
+                });
+            }
+        }
+        
+        Ok(())
+    }
+
+    /// Handle maximum chunks limit changes
+    fn handle_max_chunks_change(&mut self, old_max_chunks: Option<usize>) -> WorldResult<()> {
+        if let Some(new_max) = self.config.max_chunks_loaded {
+            // If the limit decreased and we have too many chunks loaded, we need to unload some
+            if self.chunk_count() > new_max {
+                // This would typically trigger chunk unloading based on LRU or distance
+                // For now, we validate that the change is feasible
+                return Err(WorldError::ResourceLimitExceeded {
+                    resource: "chunks".to_string(),
+                    limit: new_max,
+                    requested: self.chunk_count(),
+                });
+            }
+            
+            // Validate that the new limit is compatible with render distance
+            let estimated_chunks = ((self.config.render_distance * 2 + 1) as usize).pow(3);
+            if new_max < estimated_chunks {
+                return Err(WorldError::InvalidConfiguration {
+                    parameter: "max_chunks_loaded".to_string(),
+                    value: new_max.to_string(),
+                    reason: format!("Max chunks {} is less than render distance requirement {}", 
+                                  new_max, estimated_chunks),
+                });
+            }
+        }
+        
+        Ok(())
+    }
+
+    /// Handle performance monitoring configuration changes
+    fn handle_performance_monitoring_change(&mut self) -> WorldResult<()> {
+        // Update the performance monitor configuration
+        if self.config.performance_monitoring {
+            // Enable monitoring if it was disabled
+            self.performance_monitor = PerformanceMonitor::new(MonitorConfig::default());
+        } else {
+            // Disable monitoring - we keep the monitor but it won't collect new data
+            // The existing data remains available for queries
+        }
+        
+        Ok(())
+    }
+
+    /// Handle chunk unload delay configuration changes
+    fn handle_unload_delay_change(&mut self) -> WorldResult<()> {
+        // Validate the new unload delay
+        if self.config.chunk_unload_delay.as_secs() > 3600 {
+            return Err(WorldError::InvalidConfiguration {
+                parameter: "chunk_unload_delay".to_string(),
+                value: format!("{:?}", self.config.chunk_unload_delay),
+                reason: "Chunk unload delay should not exceed 1 hour".to_string(),
+            });
+        }
+        
+        // The new delay will be used for future unload operations
+        // Existing scheduled unloads keep their original timing
+        Ok(())
+    }
+
+    /// Validate that the current world state is compatible with the configuration
+    pub fn validate_config_compatibility(&self) -> WorldResult<()> {
+        // Check that current chunk count doesn't exceed max_chunks_loaded
+        if let Some(max_chunks) = self.config.max_chunks_loaded {
+            if self.chunk_count() > max_chunks {
+                return Err(WorldError::ResourceLimitExceeded {
+                    resource: "chunks".to_string(),
+                    limit: max_chunks,
+                    requested: self.chunk_count(),
+                });
+            }
+        }
+
+        // Check that render distance is reasonable for current chunk count
+        let estimated_chunks = ((self.config.render_distance * 2 + 1) as usize).pow(3);
+        if let Some(max_chunks) = self.config.max_chunks_loaded {
+            if estimated_chunks > max_chunks {
+                return Err(WorldError::InvalidConfiguration {
+                    parameter: "render_distance".to_string(),
+                    value: self.config.render_distance.to_string(),
+                    reason: format!("Render distance requires {} chunks but max_chunks is {}", 
+                                  estimated_chunks, max_chunks),
+                });
+            }
+        }
+
+        Ok(())
+    }
+
     /// Get the coordinate system
     pub fn coordinate_system(&self) -> &CoordinateSystem {
         &self.coordinate_system
@@ -3610,6 +3876,347 @@ mod tests {
                 "Chunk meshing count should be 0 after reset");
             prop_assert_eq!(reset_stats.total_chunk_time, Duration::ZERO, 
                 "Total chunk time should be 0 after reset");
+        }
+    }
+
+    // Property test generators for configuration testing
+    fn arb_config_version() -> impl Strategy<Value = config::ConfigVersion> {
+        prop_oneof![
+            Just(config::ConfigVersion::V1_0),
+            Just(config::ConfigVersion::V1_1),
+            Just(config::ConfigVersion::V1_2),
+        ]
+    }
+
+    fn arb_world_config_with_version() -> impl Strategy<Value = WorldConfig> {
+        (
+            arb_config_version(),
+            1u32..=32u32,
+            10usize..=100usize,
+            1u64..=3600u64,
+            any::<bool>(),
+        ).prop_map(|(version, render_distance, max_chunks, unload_delay_secs, performance_monitoring)| {
+            WorldConfig {
+                version,
+                render_distance,
+                initial_load_pattern: LoadPattern::Single(ChunkCoord::new(0, 0, 0)),
+                max_chunks_loaded: Some(max_chunks),
+                chunk_unload_delay: Duration::from_secs(unload_delay_secs),
+                performance_monitoring,
+            }
+        })
+    }
+
+    // Property 10: Configuration Validation and Adaptation
+    // **Validates: Requirements 6.1, 6.2, 6.3, 6.4, 6.5**
+    proptest! {
+        #[test]
+        fn property_configuration_validation_and_adaptation(
+            initial_config in arb_world_config(),
+            new_config in arb_world_config_with_version(),
+        ) {
+            // Feature: world-integration, Property 10: Configuration Validation and Adaptation
+            
+            let mut world = World::new(initial_config.clone()).unwrap();
+            
+            // Test configuration validation
+            let validation_result = new_config.validate();
+            
+            // All generated configurations should be valid
+            prop_assert!(validation_result.is_ok(), 
+                "Generated configurations should be valid: {:?}", validation_result);
+            
+            // Test configuration compatibility checking
+            let differences = world.get_config_differences(&new_config);
+            let would_require_restart = world.would_require_restart(&new_config);
+            
+            // Validate config change should work for compatible configurations
+            let validation_check = world.validate_config_change(&new_config);
+            
+            if validation_check.is_ok() {
+                let reported_differences = validation_check.unwrap();
+                prop_assert_eq!(differences, reported_differences, 
+                    "Reported differences should match actual differences");
+                
+                // If validation passes, the configuration should be compatible
+                prop_assert!(new_config.is_compatible_with(&world.config()), 
+                    "Configuration should be compatible if validation passes");
+                
+                // Test actual configuration update
+                let update_result = world.update_config(new_config.clone());
+                
+                if update_result.is_ok() {
+                    // Configuration should be updated
+                    prop_assert_eq!(world.config().render_distance, new_config.render_distance, 
+                        "Render distance should be updated");
+                    prop_assert_eq!(world.config().max_chunks_loaded, new_config.max_chunks_loaded, 
+                        "Max chunks should be updated");
+                    prop_assert_eq!(world.config().performance_monitoring, new_config.performance_monitoring, 
+                        "Performance monitoring should be updated");
+                    prop_assert_eq!(world.config().chunk_unload_delay, new_config.chunk_unload_delay, 
+                        "Chunk unload delay should be updated");
+                    
+                    // World should remain in a consistent state after configuration update
+                    let consistency_check = world.validate_world_consistency();
+                    if let Err(error) = consistency_check {
+                        // Only accept consistency errors related to error states (from failed chunk loads)
+                        match error {
+                            WorldError::InvalidChunkState { current_state: ChunkState::Error, .. } => {
+                                // This is acceptable - error state chunks from previous operations
+                            }
+                            _ => {
+                                prop_assert!(false, "World should remain consistent after config update: {}", error);
+                            }
+                        }
+                    }
+                    
+                    // Configuration compatibility should be maintained
+                    let final_compatibility = world.validate_config_compatibility();
+                    prop_assert!(final_compatibility.is_ok(), 
+                        "World should be compatible with its own configuration after update");
+                }
+            } else {
+                // If validation fails, it should be for a valid reason
+                match validation_check {
+                    Err(WorldError::InvalidConfiguration { parameter, reason, .. }) => {
+                        // This is expected for incompatible configurations
+                        prop_assert!(
+                            parameter == "configuration" || 
+                            reason.contains("incompatible") || 
+                            reason.contains("restart"),
+                            "Configuration validation failure should have appropriate reason: {}", reason
+                        );
+                    }
+                    _ => {
+                        prop_assert!(false, "Unexpected validation error type");
+                    }
+                }
+            }
+            
+            // Test restart requirement logic
+            if would_require_restart {
+                // If restart is required, update should fail or be handled appropriately
+                let update_result = world.update_config(new_config.clone());
+                if update_result.is_err() {
+                    match update_result.unwrap_err() {
+                        WorldError::InvalidConfiguration { reason, .. } => {
+                            prop_assert!(reason.contains("restart"), 
+                                "Restart-required configurations should fail with restart message");
+                        }
+                        _ => {
+                            prop_assert!(false, "Unexpected error type for restart-required config");
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // Property test for configuration migration
+    proptest! {
+        #[test]
+        fn property_configuration_migration(
+            version in arb_config_version(),
+            render_distance in 1u32..=32u32,
+            max_chunks in 10usize..=100usize,
+            performance_monitoring in any::<bool>(),
+        ) {
+            // Feature: world-integration, Property 10: Configuration Validation and Adaptation (migration)
+            
+            let mut config = WorldConfig::new_with_version(version)
+                .with_render_distance(render_distance)
+                .with_max_chunks(Some(max_chunks))
+                .with_performance_monitoring(performance_monitoring);
+            
+            let original_version = config.version;
+            
+            // Test migration to latest version
+            let migration_result = config.migrate_to_latest();
+            prop_assert!(migration_result.is_ok(), 
+                "Migration should succeed for valid configurations");
+            
+            let was_migrated = migration_result.unwrap();
+            
+            // After migration, version should be latest
+            prop_assert_eq!(config.version, config::ConfigVersion::V1_2, 
+                "Configuration should be migrated to latest version");
+            
+            // Migration flag should be accurate
+            if original_version == config::ConfigVersion::V1_2 {
+                prop_assert!(!was_migrated, 
+                    "Migration flag should be false if already at latest version");
+            } else {
+                prop_assert!(was_migrated, 
+                    "Migration flag should be true if version was updated");
+            }
+            
+            // Configuration should remain valid after migration
+            prop_assert!(config.validate().is_ok(), 
+                "Configuration should remain valid after migration");
+            
+            // Core parameters should be preserved during migration
+            prop_assert_eq!(config.render_distance, render_distance, 
+                "Render distance should be preserved during migration");
+            prop_assert_eq!(config.max_chunks_loaded, Some(max_chunks), 
+                "Max chunks should be preserved during migration");
+            
+            // Performance monitoring should be preserved for V1_1+ or set to default for V1_0
+            if original_version == config::ConfigVersion::V1_0 {
+                // V1_0 migration sets performance monitoring to true by default
+                prop_assert!(config.performance_monitoring, 
+                    "Performance monitoring should be enabled by default for V1_0 migration");
+            } else {
+                prop_assert_eq!(config.performance_monitoring, performance_monitoring, 
+                    "Performance monitoring should be preserved for V1_1+ migration");
+            }
+            
+            // Chunk unload delay should be set to default value
+            prop_assert_eq!(config.chunk_unload_delay, Duration::from_secs(CHUNK_UNLOAD_DELAY_SECONDS), 
+                "Chunk unload delay should be set to default during migration");
+        }
+    }
+
+    // Property test for configuration compatibility
+    proptest! {
+        #[test]
+        fn property_configuration_compatibility(
+            config1 in arb_world_config_with_version(),
+            config2 in arb_world_config_with_version(),
+        ) {
+            // Feature: world-integration, Property 10: Configuration Validation and Adaptation (compatibility)
+            
+            let compatibility = config1.is_compatible_with(&config2);
+            let version_compatibility = config1.is_version_compatible_with(config2.version);
+            
+            // Version compatibility should be a factor in overall compatibility
+            if !version_compatibility {
+                prop_assert!(!compatibility, 
+                    "Configurations should not be compatible if versions are incompatible");
+            }
+            
+            // Test version compatibility rules
+            use config::ConfigVersion::*;
+            let expected_version_compatibility = match (config1.version, config2.version) {
+                // Same versions are always compatible
+                (v1, v2) if v1 == v2 => true,
+                // V1_2 can handle all previous versions
+                (V1_2, V1_1) | (V1_2, V1_0) => true,
+                // V1_1 can handle V1_0
+                (V1_1, V1_0) => true,
+                // Older versions cannot handle newer versions
+                _ => false,
+            };
+            
+            prop_assert_eq!(version_compatibility, expected_version_compatibility, 
+                "Version compatibility should follow expected rules");
+            
+            // Test configuration differences
+            let differences = config1.get_differences(&config2);
+            
+            // If configurations are identical, there should be no differences
+            if config1.version == config2.version &&
+               config1.render_distance == config2.render_distance &&
+               config1.initial_load_pattern == config2.initial_load_pattern &&
+               config1.max_chunks_loaded == config2.max_chunks_loaded &&
+               config1.chunk_unload_delay == config2.chunk_unload_delay &&
+               config1.performance_monitoring == config2.performance_monitoring {
+                prop_assert!(differences.is_empty(), 
+                    "Identical configurations should have no differences");
+            }
+            
+            // Each difference should correspond to an actual parameter difference
+            for diff in &differences {
+                match diff.as_str() {
+                    "version" => {
+                        prop_assert_ne!(config1.version, config2.version, 
+                            "Version difference should correspond to actual version difference");
+                    }
+                    "render_distance" => {
+                        prop_assert_ne!(config1.render_distance, config2.render_distance, 
+                            "Render distance difference should correspond to actual difference");
+                    }
+                    "initial_load_pattern" => {
+                        prop_assert_ne!(&config1.initial_load_pattern, &config2.initial_load_pattern, 
+                            "Load pattern difference should correspond to actual difference");
+                    }
+                    "max_chunks_loaded" => {
+                        prop_assert_ne!(config1.max_chunks_loaded, config2.max_chunks_loaded, 
+                            "Max chunks difference should correspond to actual difference");
+                    }
+                    "chunk_unload_delay" => {
+                        prop_assert_ne!(config1.chunk_unload_delay, config2.chunk_unload_delay, 
+                            "Unload delay difference should correspond to actual difference");
+                    }
+                    "performance_monitoring" => {
+                        prop_assert_ne!(config1.performance_monitoring, config2.performance_monitoring, 
+                            "Performance monitoring difference should correspond to actual difference");
+                    }
+                    _ => {
+                        prop_assert!(false, "Unknown configuration difference: {}", diff);
+                    }
+                }
+            }
+            
+            // Test restart requirement logic
+            let requires_restart = config1.requires_restart(&config2);
+            
+            // Currently, no configuration changes require restart
+            prop_assert!(!requires_restart, 
+                "Currently no configuration changes should require restart");
+        }
+    }
+
+    // Property test for configuration update with migration
+    proptest! {
+        #[test]
+        fn property_configuration_update_with_migration(
+            initial_config in arb_world_config(),
+            new_version in arb_config_version(),
+            new_render_distance in 1u32..=32u32,
+        ) {
+            // Feature: world-integration, Property 10: Configuration Validation and Adaptation (update with migration)
+            
+            let mut world = World::new(initial_config.clone()).unwrap();
+            
+            // Create a new configuration with potentially older version
+            let new_config = WorldConfig::new_with_version(new_version)
+                .with_render_distance(new_render_distance)
+                .with_max_chunks(Some(50));
+            
+            // Test update with migration
+            let update_result = world.update_config_with_migration(new_config.clone());
+            
+            if update_result.is_ok() {
+                // Configuration should be updated and migrated
+                prop_assert_eq!(world.config().version, config::ConfigVersion::V1_2, 
+                    "Configuration should be migrated to latest version");
+                prop_assert_eq!(world.config().render_distance, new_render_distance, 
+                    "Render distance should be updated");
+                
+                // World should remain consistent after update with migration
+                let consistency_check = world.validate_world_consistency();
+                if let Err(error) = consistency_check {
+                    // Only accept consistency errors related to error states
+                    match error {
+                        WorldError::InvalidChunkState { current_state: ChunkState::Error, .. } => {
+                            // This is acceptable
+                        }
+                        _ => {
+                            prop_assert!(false, "World should remain consistent after update with migration: {}", error);
+                        }
+                    }
+                }
+            } else {
+                // If update fails, it should be for a valid reason
+                match update_result.unwrap_err() {
+                    WorldError::InvalidConfiguration { .. } => {
+                        // This is expected for incompatible configurations
+                    }
+                    _ => {
+                        prop_assert!(false, "Unexpected error type for configuration update with migration");
+                    }
+                }
+            }
         }
     }
 }
