@@ -1,12 +1,12 @@
 //! Block definitions and properties
 
 use serde::{Deserialize, Serialize};
-use world::chunk::BlockId;
+use world::BlockID;
 
 /// Block properties loaded from JSON data files
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BlockDefinition {
-    pub id: BlockId,
+    pub id: BlockID,
     pub name: String,
     pub solid: bool,
     pub transparent: bool,
@@ -28,7 +28,7 @@ impl BlockRegistry {
         self.blocks.push(block);
     }
     
-    pub fn get_block(&self, id: BlockId) -> Option<&BlockDefinition> {
+    pub fn get_block(&self, id: BlockID) -> Option<&BlockDefinition> {
         self.blocks.iter().find(|b| b.id == id)
     }
     

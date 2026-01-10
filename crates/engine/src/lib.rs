@@ -10,3 +10,4 @@ pub mod util;
 
 pub use glam;
 pub use bevy_ecs;
+pub use bytemuck;

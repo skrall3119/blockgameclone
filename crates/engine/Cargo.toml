@@ -7,6 +7,7 @@ description = "Core engine systems - graphics, ECS, platform abstraction"
 [dependencies]
 # Math
 glam.workspace = true
+bytemuck.workspace = true
 
 # ECS
 bevy_ecs.workspace = true

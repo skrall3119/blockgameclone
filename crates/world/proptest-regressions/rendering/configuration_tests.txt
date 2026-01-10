@@ -1,0 +1,7 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 814ddf4c1ce66119619ec7a463c64b2e41b30be7ecdc213151a7543a3b19f9eb # shrinks to dimensions = ChunkDimensions { width: 1, height: 1, depth: 1 }, world_position = ChunkPosition { x: 0, z: 0 }, include_variety = false, fill_block = Air, block_pattern = []

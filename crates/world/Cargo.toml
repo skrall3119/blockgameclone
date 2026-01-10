@@ -4,12 +4,20 @@ version = "0.1.0"
 edition = "2021"
 description = "World generation, chunk management, and storage systems"
 
+[features]
+default = ["serde"]
+serde = ["dep:serde"]
+
 [dependencies]
 # Engine dependency
 engine = { path = "../engine" }
 
 # Math
 glam.workspace = true
+
+# Graphics (for rendering module)
+wgpu.workspace = true
+bytemuck.workspace = true
 
 # ECS
 bevy_ecs.workspace = true
@@ -22,7 +30,7 @@ lz4_flex.workspace = true
 zstd.workspace = true
 
 # Serialization
-serde.workspace = true
+serde = { workspace = true, optional = true }
 serde_json.workspace = true
 
 # Async and IO
@@ -40,3 +48,14 @@ noise = "0.8"
 
 # Random number generation
 rand = "0.8"
+
+[dev-dependencies]
+proptest.workspace = true
+criterion.workspace = true
+rand = "0.8"
+ctor = "0.2"
+futures = "0.3"
+
+[[bench]]
+name = "chunk_benchmarks"
+harness = false
