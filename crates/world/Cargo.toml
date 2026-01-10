@@ -59,3 +59,7 @@ futures = "0.3"
 [[bench]]
 name = "chunk_benchmarks"
 harness = false
+
+[[bench]]
+name = "rendering_benchmarks"
+harness = false

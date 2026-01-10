@@ -187,15 +187,15 @@ impl ChunkRenderer {
         chunk_position: &ChunkPosition,
         mesh: &crate::rendering::ChunkMesh,
     ) -> RenderResult<()> {
+        // Validate that we have geometry to render first
+        if mesh.is_empty() {
+            return Ok(()); // Nothing to render
+        }
+
         // Get buffers for the chunk
         let (vertex_buffer, index_buffer) = self.buffer_manager
             .get_buffers(chunk_position)
             .ok_or(crate::rendering::RenderError::BufferCreationFailed)?;
-
-        // Validate that we have geometry to render
-        if mesh.is_empty() {
-            return Ok(()); // Nothing to render
-        }
 
         // Set the render pipeline
         render_pass.set_pipeline(&self.render_pipeline);

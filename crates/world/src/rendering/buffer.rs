@@ -34,11 +34,18 @@ impl BufferManager {
     pub fn create_buffers(&mut self, chunk_pos: ChunkPosition, mesh: &ChunkMesh) -> RenderResult<()> {
         // Validate mesh data before creating buffers
         if mesh.vertices.is_empty() || mesh.indices.is_empty() {
+            log::warn!("Attempting to create buffers for empty mesh at {:?}", chunk_pos);
             return Err(RenderError::InvalidMeshData);
         }
 
         // Validate mesh integrity
-        mesh.validate().map_err(|_| RenderError::InvalidMeshData)?;
+        mesh.validate().map_err(|e| {
+            log::error!("Mesh validation failed for chunk {:?}: {}", chunk_pos, e);
+            RenderError::InvalidMeshData
+        })?;
+
+        log::debug!("Creating buffers for chunk {:?}: {} vertices, {} indices", 
+                   chunk_pos, mesh.vertices.len(), mesh.indices.len());
 
         // Create vertex buffer
         let vertex_data: &[u8] = bytemuck::cast_slice(&mesh.vertices);
@@ -62,6 +69,7 @@ impl BufferManager {
         self.vertex_buffers.insert(chunk_pos, vertex_buffer);
         self.index_buffers.insert(chunk_pos, index_buffer);
 
+        log::debug!("Successfully created buffers for chunk {:?}", chunk_pos);
         Ok(())
     }
 
@@ -86,17 +94,24 @@ impl BufferManager {
     /// Update buffers for a chunk when its mesh data changes
     /// This method handles both creation and updates efficiently
     pub fn update_chunk_buffers(&mut self, chunk_pos: ChunkPosition, mesh: &ChunkMesh, queue: &wgpu::Queue) -> RenderResult<()> {
+        log::debug!("Updating buffers for chunk {:?}", chunk_pos);
+        
         // Handle empty meshes by removing buffers
         if mesh.is_empty() {
+            log::debug!("Mesh is empty for chunk {:?}, removing buffers", chunk_pos);
             self.remove_buffers(&chunk_pos);
             return Ok(());
         }
 
         // Validate mesh data
-        mesh.validate().map_err(|_| RenderError::InvalidMeshData)?;
+        mesh.validate().map_err(|e| {
+            log::error!("Mesh validation failed for chunk {:?}: {}", chunk_pos, e);
+            RenderError::InvalidMeshData
+        })?;
 
         // Check if we need to recreate buffers due to size changes
         let needs_recreation = self.check_buffer_size_mismatch(&chunk_pos, mesh);
+        log::debug!("Chunk {:?} needs buffer recreation: {}", chunk_pos, needs_recreation);
 
         if needs_recreation {
             // Remove old buffers and create new ones with the correct size
@@ -105,6 +120,7 @@ impl BufferManager {
         }
 
         // Upload the mesh data to GPU
+        log::debug!("Uploading mesh data for chunk {:?}", chunk_pos);
         self.upload_mesh_data(queue, &chunk_pos, mesh)
     }
 

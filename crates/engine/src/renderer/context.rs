@@ -21,9 +21,9 @@ pub struct GraphicsContext<'window> {
 impl<'window> GraphicsContext<'window> {
     /// Create a new graphics context for the given window
     pub async fn new(window: &'window Window) -> GraphicsResult<Self> {
-        // Initialize wgpu instance with Vulkan backend preference
+        // Initialize wgpu instance with broader backend support
         let instance = Instance::new(&wgpu::InstanceDescriptor {
-            backends: Backends::VULKAN | Backends::DX12 | Backends::METAL,
+            backends: Backends::all(),
             flags: wgpu::InstanceFlags::default(),
             ..Default::default()
         });
@@ -33,17 +33,51 @@ impl<'window> GraphicsContext<'window> {
             .create_surface(window)
             .map_err(GraphicsError::SurfaceCreation)?;
 
-        // Request adapter with Vulkan preference
-        let adapter_options = RequestAdapterOptions {
+        // Try high performance first, then fallback to low power
+        let adapter_options_high_perf = RequestAdapterOptions {
             power_preference: PowerPreference::HighPerformance,
             compatible_surface: Some(&surface),
             force_fallback_adapter: false,
         };
 
-        let adapter = match instance.request_adapter(&adapter_options).await {
-            Ok(adapter) => adapter,
-            Err(_) => return Err(GraphicsError::NoAdapter),
+        let adapter_options_low_power = RequestAdapterOptions {
+            power_preference: PowerPreference::LowPower,
+            compatible_surface: Some(&surface),
+            force_fallback_adapter: false,
         };
+
+        let adapter_options_fallback = RequestAdapterOptions {
+            power_preference: PowerPreference::None,
+            compatible_surface: Some(&surface),
+            force_fallback_adapter: true,
+        };
+
+        let adapter = match instance.request_adapter(&adapter_options_high_perf).await {
+            Ok(adapter) => {
+                log::info!("Selected high performance graphics adapter");
+                adapter
+            }
+            Err(_) => match instance.request_adapter(&adapter_options_low_power).await {
+                Ok(adapter) => {
+                    log::info!("Selected low power graphics adapter");
+                    adapter
+                }
+                Err(_) => match instance.request_adapter(&adapter_options_fallback).await {
+                    Ok(adapter) => {
+                        log::info!("Selected fallback graphics adapter");
+                        adapter
+                    }
+                    Err(_) => {
+                        log::error!("No compatible graphics adapter found");
+                        return Err(GraphicsError::NoAdapter);
+                    }
+                }
+            }
+        };
+
+        // Log adapter information
+        let adapter_info = adapter.get_info();
+        log::info!("Graphics adapter: {} ({:?})", adapter_info.name, adapter_info.backend);
 
         // Get required features and limits
         let required_features = Features::empty();
@@ -68,12 +102,12 @@ impl<'window> GraphicsContext<'window> {
             ..Default::default()
         };
 
-        let (device, queue): (Device, Queue) = adapter
+        let (device, queue) = adapter
             .request_device(&device_descriptor)
             .await
             .map_err(GraphicsError::DeviceCreation)?;
 
-        // Configure surface
+        // Configure surface with robust fallback options
         let surface_caps = surface.get_capabilities(&adapter);
         let surface_format = surface_caps
             .formats
@@ -82,14 +116,38 @@ impl<'window> GraphicsContext<'window> {
             .find(|f| f.is_srgb())
             .unwrap_or(surface_caps.formats[0]);
 
+        // Choose the best present mode with fallbacks
+        let present_mode = if surface_caps.present_modes.contains(&wgpu::PresentMode::Mailbox) {
+            wgpu::PresentMode::Mailbox
+        } else if surface_caps.present_modes.contains(&wgpu::PresentMode::Immediate) {
+            wgpu::PresentMode::Immediate
+        } else {
+            surface_caps.present_modes[0]
+        };
+
+        // Choose the best alpha mode with fallbacks
+        let alpha_mode = if surface_caps.alpha_modes.contains(&wgpu::CompositeAlphaMode::Opaque) {
+            wgpu::CompositeAlphaMode::Opaque
+        } else {
+            surface_caps.alpha_modes[0]
+        };
+
         let size = window.inner_size();
+        
+        // Ensure minimum valid dimensions
+        let width = size.width.max(1);
+        let height = size.height.max(1);
+        
+        log::info!("Surface configuration: {}x{}, format: {:?}, present_mode: {:?}, alpha_mode: {:?}", 
+                   width, height, surface_format, present_mode, alpha_mode);
+        
         let config = SurfaceConfiguration {
             usage: TextureUsages::RENDER_ATTACHMENT,
             format: surface_format,
-            width: size.width,
-            height: size.height,
-            present_mode: surface_caps.present_modes[0],
-            alpha_mode: surface_caps.alpha_modes[0],
+            width,
+            height,
+            present_mode,
+            alpha_mode,
             view_formats: vec![],
             desired_maximum_frame_latency: 2,
         };
@@ -126,21 +184,45 @@ impl<'window> GraphicsContext<'window> {
 
     /// Get the current surface texture for rendering
     pub fn get_current_texture(&self) -> GraphicsResult<wgpu::SurfaceTexture> {
-        self.surface.get_current_texture().map_err(|err| match err {
-            wgpu::SurfaceError::Lost => GraphicsError::SurfaceLost,
-            wgpu::SurfaceError::OutOfMemory => GraphicsError::SurfaceConfiguration {
-                reason: "Out of GPU memory".to_string(),
-            },
-            wgpu::SurfaceError::Timeout => GraphicsError::SurfaceConfiguration {
-                reason: "Surface texture acquisition timed out".to_string(),
-            },
-            wgpu::SurfaceError::Outdated => GraphicsError::SurfaceConfiguration {
-                reason: "Surface configuration is outdated".to_string(),
-            },
-            wgpu::SurfaceError::Other => GraphicsError::SurfaceConfiguration {
-                reason: "Unknown surface error occurred".to_string(),
-            },
-        })
+        // Try to get surface texture with timeout handling
+        match self.surface.get_current_texture() {
+            Ok(texture) => Ok(texture),
+            Err(wgpu::SurfaceError::Timeout) => {
+                // On timeout, try to reconfigure the surface and retry once
+                log::warn!("Surface texture acquisition timed out, attempting surface reconfiguration");
+                self.surface.configure(&self.device, &self.config);
+                
+                // Retry once after reconfiguration
+                self.surface.get_current_texture().map_err(|err| match err {
+                    wgpu::SurfaceError::Lost => GraphicsError::SurfaceLost,
+                    wgpu::SurfaceError::OutOfMemory => GraphicsError::SurfaceConfiguration {
+                        reason: "Out of GPU memory after reconfiguration".to_string(),
+                    },
+                    wgpu::SurfaceError::Timeout => GraphicsError::SurfaceConfiguration {
+                        reason: "Surface texture acquisition timed out even after reconfiguration. This may indicate graphics driver issues or incompatible hardware.".to_string(),
+                    },
+                    wgpu::SurfaceError::Outdated => GraphicsError::SurfaceConfiguration {
+                        reason: "Surface configuration is outdated after reconfiguration".to_string(),
+                    },
+                    wgpu::SurfaceError::Other => GraphicsError::SurfaceConfiguration {
+                        reason: "Unknown surface error occurred after reconfiguration".to_string(),
+                    },
+                })
+            }
+            Err(err) => Err(match err {
+                wgpu::SurfaceError::Lost => GraphicsError::SurfaceLost,
+                wgpu::SurfaceError::OutOfMemory => GraphicsError::SurfaceConfiguration {
+                    reason: "Out of GPU memory".to_string(),
+                },
+                wgpu::SurfaceError::Outdated => GraphicsError::SurfaceConfiguration {
+                    reason: "Surface configuration is outdated".to_string(),
+                },
+                wgpu::SurfaceError::Other => GraphicsError::SurfaceConfiguration {
+                    reason: "Unknown surface error occurred".to_string(),
+                },
+                wgpu::SurfaceError::Timeout => unreachable!(), // Already handled above
+            })
+        }
     }
 
     /// Get the surface format
