@@ -16,3 +16,9 @@ Cargo.lock
 # OS files
 .DS_Store
 Thumbs.db
+.kiro/hooks/auto-commit-on-task-completion.json
+.kiro/hooks/auto-commit-task.kiro.hook
+.kiro/hooks/commit-on-task-status-complete.json
+.kiro/hooks/config.json
+.kiro/hooks/simple-auto-commit.json
+.kiro/specs/chunk-rendering/tasks.md
