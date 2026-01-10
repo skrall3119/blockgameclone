@@ -7,6 +7,7 @@ pub mod chunk;
 pub mod generation;
 pub mod storage;
 pub mod rendering;
+pub mod world;
 
 // Re-export core chunk types for convenience
 pub use chunk::{
@@ -18,6 +19,12 @@ pub use chunk::{
 pub use rendering::{
     RenderError, RenderResult, ChunkMesh, ChunkVertex, CubeFace,
     MeshGenerator, FaceDirection, BufferManager, ChunkRenderer, ChunkUniforms,
+};
+
+// Re-export world integration types for convenience
+pub use world::{
+    World, WorldConfig, WorldError, WorldResult, ChunkCoord, ChunkEntry, ChunkState,
+    LoadPattern, CoordinateSystem, PerformanceMonitor, MemoryManager,
 };
 
 // Re-export external dependencies
