@@ -1,7 +1,7 @@
 //! Player controller and related systems
 
 use glam::{Vec3, Quat};
-use engine::ecs::*;
+use engine::ecs::prelude::*;
 
 /// Player position and orientation component
 #[derive(Component, Debug, Clone)]
