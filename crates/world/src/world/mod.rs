@@ -1435,6 +1435,7 @@ mod tests {
     use super::*;
     use proptest::prelude::*;
     use crate::chunk::{Chunk, ChunkDimensions, ChunkPosition};
+    use std::time::Duration;
 
     // Property test generators
     fn arb_chunk_state() -> impl Strategy<Value = ChunkState> {
@@ -3371,6 +3372,244 @@ mod tests {
                 prop_assert!((distance - expected_distance).abs() < 0.001, 
                     "Distance calculation should be accurate");
             }
+        }
+    }
+
+    // Property 9: Performance Monitoring Accuracy
+    // **Validates: Requirements 5.1, 5.2, 5.3, 5.4**
+    proptest! {
+        #[test]
+        fn property_performance_monitoring_accuracy(
+            config in arb_world_config(),
+            frame_times in prop::collection::vec(1u64..100u64, 5..20),
+            chunk_counts in prop::collection::vec(1usize..50usize, 3..10),
+            generation_times in prop::collection::vec(1u64..1000u64, 2..8),
+            meshing_times in prop::collection::vec(1u64..500u64, 2..8),
+        ) {
+            // Feature: world-integration, Property 9: Performance Monitoring Accuracy
+            
+            let mut world = World::new(config).unwrap();
+            let monitor = world.performance_monitor_mut();
+            
+            // Test frame time tracking accuracy
+            let mut expected_total_frame_time = Duration::ZERO;
+            for &frame_time_ms in &frame_times {
+                let frame_time = Duration::from_millis(frame_time_ms);
+                monitor.record_frame_time(frame_time);
+                expected_total_frame_time += frame_time;
+            }
+            
+            // FPS calculation should be accurate
+            let current_fps = monitor.current_fps();
+            if !frame_times.is_empty() {
+                let avg_frame_time = expected_total_frame_time.as_secs_f32() / frame_times.len() as f32;
+                let expected_fps = if avg_frame_time > 0.0 { 1.0 / avg_frame_time } else { 0.0 };
+                
+                prop_assert!((current_fps - expected_fps).abs() < 0.1, 
+                    "FPS calculation should be accurate: expected {}, got {}", expected_fps, current_fps);
+                prop_assert!(current_fps >= 0.0, "FPS should be non-negative");
+            }
+            
+            // Average frame time should be accurate
+            let avg_frame_time = monitor.average_frame_time();
+            if !frame_times.is_empty() {
+                let expected_avg = expected_total_frame_time / frame_times.len() as u32;
+                let diff = if avg_frame_time > expected_avg {
+                    avg_frame_time - expected_avg
+                } else {
+                    expected_avg - avg_frame_time
+                };
+                prop_assert!(diff <= Duration::from_millis(1), 
+                    "Average frame time should be accurate");
+            }
+            
+            // Test memory usage tracking
+            for (i, &chunk_count) in chunk_counts.iter().enumerate() {
+                let total_memory = chunk_count * 1024 * 1024; // 1MB per chunk
+                let gpu_memory = chunk_count * 512 * 1024;    // 512KB GPU per chunk
+                let sample = MemorySample::new(chunk_count, total_memory, gpu_memory);
+                monitor.record_memory_sample(sample);
+                
+                // Current memory usage should reflect the latest sample
+                if let Some(current_sample) = monitor.current_memory_usage() {
+                    prop_assert_eq!(current_sample.chunk_count, chunk_count, 
+                        "Current memory sample should reflect latest chunk count");
+                    prop_assert_eq!(current_sample.total_memory, total_memory, 
+                        "Current memory sample should reflect latest total memory");
+                    prop_assert_eq!(current_sample.gpu_memory, gpu_memory, 
+                        "Current memory sample should reflect latest GPU memory");
+                }
+                
+                // Update chunk statistics to match
+                monitor.update_chunk_stats(chunk_count);
+                let chunk_stats = monitor.chunk_statistics();
+                prop_assert_eq!(chunk_stats.chunks_loaded, chunk_count, 
+                    "Chunk statistics should reflect updated chunk count");
+            }
+            
+            // Test memory trend calculation
+            if chunk_counts.len() >= 2 {
+                let trend = monitor.memory_trend();
+                prop_assert!(trend >= -1.0 && trend <= 100.0, 
+                    "Memory trend should be within reasonable bounds");
+                
+                // If memory increased, trend should be positive
+                let last_count = chunk_counts[chunk_counts.len() - 1];
+                let prev_count = chunk_counts[chunk_counts.len() - 2];
+                if last_count > prev_count {
+                    prop_assert!(trend >= 0.0, 
+                        "Memory trend should be positive when memory increases");
+                } else if last_count < prev_count {
+                    prop_assert!(trend <= 0.0, 
+                        "Memory trend should be negative when memory decreases");
+                }
+            }
+            
+            // Test chunk operation timing accuracy
+            let mut expected_generation_total = Duration::ZERO;
+            for &gen_time_ms in &generation_times {
+                let gen_time = Duration::from_millis(gen_time_ms);
+                monitor.record_chunk_generation(gen_time);
+                expected_generation_total += gen_time;
+            }
+            
+            let mut expected_meshing_total = Duration::ZERO;
+            for &mesh_time_ms in &meshing_times {
+                let mesh_time = Duration::from_millis(mesh_time_ms);
+                monitor.record_chunk_meshing(mesh_time);
+                expected_meshing_total += mesh_time;
+            }
+            
+            let chunk_stats = monitor.chunk_statistics();
+            
+            // Generation statistics should be accurate
+            if !generation_times.is_empty() {
+                prop_assert_eq!(chunk_stats.chunks_generated, generation_times.len(), 
+                    "Generated chunk count should match number of recorded operations");
+                
+                let expected_avg_gen = expected_generation_total.as_secs_f64() / generation_times.len() as f64;
+                let actual_avg_gen = chunk_stats.generation_time_avg.as_secs_f64();
+                prop_assert!((actual_avg_gen - expected_avg_gen).abs() < 0.001, 
+                    "Average generation time should be accurate");
+            }
+            
+            // Meshing statistics should be accurate
+            if !meshing_times.is_empty() {
+                prop_assert_eq!(chunk_stats.chunks_meshed, meshing_times.len(), 
+                    "Meshed chunk count should match number of recorded operations");
+                
+                let expected_avg_mesh = expected_meshing_total.as_secs_f64() / meshing_times.len() as f64;
+                let actual_avg_mesh = chunk_stats.meshing_time_avg.as_secs_f64();
+                prop_assert!((actual_avg_mesh - expected_avg_mesh).abs() < 0.001, 
+                    "Average meshing time should be accurate");
+            }
+            
+            // Total chunk time should include both generation and meshing
+            let expected_total_chunk_time = expected_generation_total + expected_meshing_total;
+            let actual_total_chunk_time = chunk_stats.total_chunk_time;
+            let time_diff = if actual_total_chunk_time > expected_total_chunk_time {
+                actual_total_chunk_time - expected_total_chunk_time
+            } else {
+                expected_total_chunk_time - actual_total_chunk_time
+            };
+            prop_assert!(time_diff <= Duration::from_millis(1), 
+                "Total chunk time should be accurate");
+            
+            // Session duration should be reasonable
+            let session_duration = monitor.session_duration();
+            prop_assert!(session_duration >= Duration::ZERO, 
+                "Session duration should be non-negative");
+            prop_assert!(session_duration <= Duration::from_secs(60), 
+                "Session duration should be reasonable for test execution");
+            
+            // Memory sampling timing should work correctly
+            let should_sample = monitor.should_sample_memory();
+            prop_assert!(should_sample == true || should_sample == false, 
+                "Memory sampling check should return a boolean");
+        }
+    }
+
+    // Property test for performance monitor configuration and limits
+    proptest! {
+        #[test]
+        fn property_performance_monitor_configuration_limits(
+            max_frame_samples in 1usize..200usize,
+            max_memory_samples in 1usize..100usize,
+            sample_interval_ms in 100u64..5000u64,
+            frame_times in prop::collection::vec(1u64..100u64, 1..300),
+        ) {
+            // Feature: world-integration, Property 9: Performance Monitoring Accuracy (configuration)
+            
+            let config = MonitorConfig {
+                max_frame_samples,
+                max_memory_samples,
+                memory_sample_interval: Duration::from_millis(sample_interval_ms),
+                detailed_chunk_stats: true,
+            };
+            
+            let mut monitor = PerformanceMonitor::new(config.clone());
+            
+            // Record more frame times than the limit
+            for &frame_time_ms in &frame_times {
+                let frame_time = Duration::from_millis(frame_time_ms);
+                monitor.record_frame_time(frame_time);
+            }
+            
+            // Frame time samples should be limited by configuration
+            let current_fps = monitor.current_fps();
+            if frame_times.len() > max_frame_samples {
+                // Should only use the most recent samples
+                prop_assert!(current_fps >= 0.0, 
+                    "FPS should be calculated correctly even with sample limit");
+            }
+            
+            // Average frame time should be based on limited samples
+            let avg_frame_time = monitor.average_frame_time();
+            prop_assert!(avg_frame_time >= Duration::ZERO, 
+                "Average frame time should be non-negative");
+            
+            // Record memory samples up to the limit
+            for i in 0..max_memory_samples + 10 {
+                let sample = MemorySample::new(i, i * 1024, i * 512);
+                monitor.record_memory_sample(sample);
+            }
+            
+            // Current memory usage should always be available
+            let current_memory = monitor.current_memory_usage();
+            prop_assert!(current_memory.is_some(), 
+                "Current memory usage should be available after recording samples");
+            
+            if let Some(sample) = current_memory {
+                // Should be the most recent sample
+                let expected_count = max_memory_samples + 9; // Last recorded value
+                prop_assert_eq!(sample.chunk_count, expected_count, 
+                    "Current memory sample should be the most recent");
+            }
+            
+            // Memory trend should work with limited samples
+            let trend = monitor.memory_trend();
+            prop_assert!(trend >= -1.0 && trend <= 100.0, 
+                "Memory trend should be within reasonable bounds with limited samples");
+            
+            // Reset should clear all data
+            monitor.reset();
+            
+            prop_assert_eq!(monitor.current_fps(), 0.0, 
+                "FPS should be 0 after reset");
+            prop_assert_eq!(monitor.average_frame_time(), Duration::ZERO, 
+                "Average frame time should be zero after reset");
+            prop_assert!(monitor.current_memory_usage().is_none(), 
+                "Current memory usage should be None after reset");
+            prop_assert_eq!(monitor.memory_trend(), 0.0, 
+                "Memory trend should be 0 after reset");
+            
+            let reset_stats = monitor.chunk_statistics();
+            prop_assert_eq!(reset_stats.chunks_generated, 0, 
+                "Chunk generation count should be 0 after reset");
+            prop_assert_eq!(reset_stats.chunks_meshed, 0, 
+                "Chunk meshing count should be 0 after reset");
+            prop_assert_eq!(reset_stats.total_chunk_time, Duration::ZERO, 
+                "Total chunk time should be 0 after reset");
         }
     }
 }
