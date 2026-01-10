@@ -51,6 +51,10 @@ pub enum WorldError {
         limit: usize,
         requested: usize,
     },
+    /// Chunk not found at the specified coordinates
+    ChunkNotFound {
+        coord: super::ChunkCoord,
+    },
 }
 
 impl fmt::Display for WorldError {
@@ -77,6 +81,9 @@ impl fmt::Display for WorldError {
             }
             WorldError::ResourceLimitExceeded { resource, limit, requested } => {
                 write!(f, "Resource limit exceeded for '{}': limit {} < requested {}", resource, limit, requested)
+            }
+            WorldError::ChunkNotFound { coord } => {
+                write!(f, "Chunk not found at coordinates {:?}", coord)
             }
         }
     }
