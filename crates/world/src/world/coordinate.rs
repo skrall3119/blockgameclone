@@ -181,3 +181,85 @@ impl CoordinateSystem {
         chunks
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use proptest::prelude::*;
+
+    // Property test generators
+    fn arb_chunk_coord() -> impl Strategy<Value = ChunkCoord> {
+        (-1000i32..1000i32, -1000i32..1000i32, -1000i32..1000i32)
+            .prop_map(|(x, y, z)| ChunkCoord::new(x, y, z))
+    }
+
+    fn arb_world_pos() -> impl Strategy<Value = Vec3> {
+        (-10000.0f32..10000.0f32, -10000.0f32..10000.0f32, -10000.0f32..10000.0f32)
+            .prop_map(|(x, y, z)| Vec3::new(x, y, z))
+    }
+
+    fn arb_coordinate_system() -> impl Strategy<Value = CoordinateSystem> {
+        (16u32..128u32).prop_map(|chunk_size| CoordinateSystem::new(chunk_size))
+    }
+
+    // Property 2: Coordinate Transformation Round-Trip
+    // **Validates: Requirements 2.1, 2.5**
+    proptest! {
+        #[test]
+        fn property_coordinate_transformation_round_trip(
+            coord_system in arb_coordinate_system(),
+            chunk_coord in arb_chunk_coord(),
+        ) {
+            // Feature: world-integration, Property 2: Coordinate Transformation Round-Trip
+            
+            // Convert chunk coordinate to world position and back
+            let world_pos = coord_system.chunk_to_world_pos(chunk_coord);
+            let recovered_coord = coord_system.world_to_chunk_coord(world_pos);
+            
+            // The round-trip should preserve the original chunk coordinate
+            prop_assert_eq!(chunk_coord, recovered_coord);
+        }
+    }
+
+    // Additional property test for world position to chunk coordinate consistency
+    proptest! {
+        #[test]
+        fn property_world_to_chunk_consistency(
+            coord_system in arb_coordinate_system(),
+            world_pos in arb_world_pos(),
+        ) {
+            // Feature: world-integration, Property 2: Coordinate Transformation Round-Trip (extended)
+            
+            let chunk_coord = coord_system.world_to_chunk_coord(world_pos);
+            let (min_bounds, max_bounds) = coord_system.chunk_bounds(chunk_coord);
+            
+            // The world position should be within the bounds of the calculated chunk
+            prop_assert!(world_pos.x >= min_bounds.x);
+            prop_assert!(world_pos.y >= min_bounds.y);
+            prop_assert!(world_pos.z >= min_bounds.z);
+            prop_assert!(world_pos.x < max_bounds.x);
+            prop_assert!(world_pos.y < max_bounds.y);
+            prop_assert!(world_pos.z < max_bounds.z);
+        }
+    }
+
+    // Property test for local block coordinate consistency
+    proptest! {
+        #[test]
+        fn property_local_block_coordinate_consistency(
+            coord_system in arb_coordinate_system(),
+            world_pos in arb_world_pos(),
+        ) {
+            // Feature: world-integration, Property 2: Coordinate Transformation Round-Trip (local blocks)
+            
+            let (chunk_coord, block_coord) = coord_system.world_to_local_block(world_pos);
+            
+            // Block coordinates should be valid for the chunk size
+            prop_assert!(block_coord.is_valid(coord_system.chunk_size()));
+            
+            // The chunk coordinate should match what we get from direct conversion
+            let direct_chunk_coord = coord_system.world_to_chunk_coord(world_pos);
+            prop_assert_eq!(chunk_coord, direct_chunk_coord);
+        }
+    }
+}
