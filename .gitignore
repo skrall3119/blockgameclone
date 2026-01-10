@@ -1,7 +1,7 @@
 minecraft_style_voxel_game_project_plan.md
-.kiro/steering/product.md
-.kiro/steering/structure.md
-.kiro/steering/tech.md
+
+# Kiro IDE files
+.kiro/
 
 # Rust build artifacts
 /target/
@@ -16,9 +16,3 @@ Cargo.lock
 # OS files
 .DS_Store
 Thumbs.db
-.kiro/hooks/auto-commit-on-task-completion.json
-.kiro/hooks/auto-commit-task.kiro.hook
-.kiro/hooks/commit-on-task-status-complete.json
-.kiro/hooks/config.json
-.kiro/hooks/simple-auto-commit.json
-.kiro/specs/chunk-rendering/tasks.md
