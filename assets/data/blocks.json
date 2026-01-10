@@ -1,0 +1,44 @@
+[
+  {
+    "id": 0,
+    "name": "air",
+    "solid": false,
+    "transparent": true,
+    "texture_id": 0
+  },
+  {
+    "id": 1,
+    "name": "stone",
+    "solid": true,
+    "transparent": false,
+    "texture_id": 1
+  },
+  {
+    "id": 2,
+    "name": "dirt",
+    "solid": true,
+    "transparent": false,
+    "texture_id": 2
+  },
+  {
+    "id": 3,
+    "name": "grass",
+    "solid": true,
+    "transparent": false,
+    "texture_id": 3
+  },
+  {
+    "id": 4,
+    "name": "wood",
+    "solid": true,
+    "transparent": false,
+    "texture_id": 4
+  },
+  {
+    "id": 5,
+    "name": "leaves",
+    "solid": true,
+    "transparent": true,
+    "texture_id": 5
+  }
+]

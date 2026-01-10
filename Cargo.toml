@@ -1,0 +1,63 @@
+[workspace]
+members = [
+    "crates/engine",
+    "crates/world", 
+    "crates/game",
+    "crates/tools/worldgen-debug"
+]
+resolver = "2"
+
+[workspace.dependencies]
+# Math and utilities
+glam = "0.24"
+bevy_ecs = "0.12"
+
+# Graphics and windowing
+wgpu = "0.18"
+winit = "0.29"
+
+# Serialization and data
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+
+# Performance and profiling
+tracy-client = { version = "0.16", optional = true }
+
+# Async and threading
+tokio = { version = "1.0", features = ["rt-multi-thread", "fs", "io-util"] }
+rayon = "1.7"
+
+# Compression
+lz4_flex = "0.11"
+zstd = "0.13"
+
+# Error handling
+anyhow = "1.0"
+thiserror = "1.0"
+
+# Logging
+log = "0.4"
+env_logger = "0.10"
+
+[package]
+name = "voxel-game"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+engine = { path = "crates/engine" }
+world = { path = "crates/world" }
+game = { path = "crates/game" }
+
+# Application-level dependencies
+anyhow.workspace = true
+log.workspace = true
+env_logger.workspace = true
+
+[features]
+default = []
+profiling = ["tracy-client", "engine/profiling"]
+
+[[bin]]
+name = "voxel-game"
+path = "src/main.rs"

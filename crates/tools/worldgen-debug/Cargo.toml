@@ -1,0 +1,32 @@
+[package]
+name = "worldgen-debug"
+version = "0.1.0"
+edition = "2021"
+description = "Development tool for debugging world generation"
+
+[dependencies]
+# Project dependencies
+engine = { path = "../../engine" }
+world = { path = "../../world" }
+game = { path = "../../game" }
+
+# Math
+glam.workspace = true
+
+# Serialization for debug output
+serde.workspace = true
+serde_json.workspace = true
+
+# Error handling
+anyhow.workspace = true
+
+# Logging
+log.workspace = true
+env_logger.workspace = true
+
+# Image generation for debug visualization
+image = "0.24"
+
+[[bin]]
+name = "worldgen-debug"
+path = "src/main.rs"

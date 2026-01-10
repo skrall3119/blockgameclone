@@ -1,0 +1,33 @@
+[package]
+name = "engine"
+version = "0.1.0"
+edition = "2021"
+description = "Core engine systems - graphics, ECS, platform abstraction"
+
+[dependencies]
+# Math
+glam.workspace = true
+
+# ECS
+bevy_ecs.workspace = true
+
+# Graphics
+wgpu.workspace = true
+winit.workspace = true
+
+# Async
+tokio.workspace = true
+
+# Error handling
+anyhow.workspace = true
+thiserror.workspace = true
+
+# Logging
+log.workspace = true
+
+# Profiling (optional)
+tracy-client = { workspace = true, optional = true }
+
+[features]
+default = []
+profiling = ["tracy-client"]

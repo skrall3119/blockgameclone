@@ -1,0 +1,27 @@
+[package]
+name = "game"
+version = "0.1.0"
+edition = "2021"
+description = "Game logic, rules, and content definitions"
+
+[dependencies]
+# Engine and world dependencies
+engine = { path = "../engine" }
+world = { path = "../world" }
+
+# Math
+glam.workspace = true
+
+# ECS
+bevy_ecs.workspace = true
+
+# Serialization for data-driven content
+serde.workspace = true
+serde_json.workspace = true
+
+# Error handling
+anyhow.workspace = true
+thiserror.workspace = true
+
+# Logging
+log.workspace = true

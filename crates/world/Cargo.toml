@@ -1,0 +1,42 @@
+[package]
+name = "world"
+version = "0.1.0"
+edition = "2021"
+description = "World generation, chunk management, and storage systems"
+
+[dependencies]
+# Engine dependency
+engine = { path = "../engine" }
+
+# Math
+glam.workspace = true
+
+# ECS
+bevy_ecs.workspace = true
+
+# Threading
+rayon.workspace = true
+
+# Compression
+lz4_flex.workspace = true
+zstd.workspace = true
+
+# Serialization
+serde.workspace = true
+serde_json.workspace = true
+
+# Async and IO
+tokio.workspace = true
+
+# Error handling
+anyhow.workspace = true
+thiserror.workspace = true
+
+# Logging
+log.workspace = true
+
+# Noise generation for terrain
+noise = "0.8"
+
+# Random number generation
+rand = "0.8"
