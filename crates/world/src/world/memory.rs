@@ -195,6 +195,159 @@ impl MemoryManager {
             .max_by_key(|(_, time)| *time)
             .map(|(coord, time)| (*coord, *time))
     }
+
+    /// Check for potential memory leaks by detecting chunks that haven't been accessed recently
+    pub fn detect_potential_leaks(&self, max_idle_duration: std::time::Duration) -> Vec<ChunkCoord> {
+        let now = Instant::now();
+        self.chunk_access_times
+            .iter()
+            .filter_map(|(coord, last_access)| {
+                if now.duration_since(*last_access) > max_idle_duration {
+                    Some(*coord)
+                } else {
+                    None
+                }
+            })
+            .collect()
+    }
+
+    /// Validate memory bounds and detect inconsistencies
+    pub fn validate_memory_bounds(&self) -> Result<(), String> {
+        let current = self.current_usage();
+        
+        // Check if current usage exceeds budget
+        if current > self.memory_budget {
+            return Err(format!(
+                "Memory usage {} exceeds budget {}",
+                current, self.memory_budget
+            ));
+        }
+        
+        // Check if tracked memory matches atomic counter
+        let tracked_total: usize = self.chunk_memory.values().sum();
+        if tracked_total != current {
+            return Err(format!(
+                "Memory tracking inconsistency: tracked {} != atomic {}",
+                tracked_total, current
+            ));
+        }
+        
+        // Check for chunks with zero memory (potential leak)
+        let zero_memory_chunks: Vec<_> = self.chunk_memory
+            .iter()
+            .filter(|(_, &size)| size == 0)
+            .map(|(coord, _)| *coord)
+            .collect();
+        
+        if !zero_memory_chunks.is_empty() {
+            return Err(format!(
+                "Found {} chunks with zero memory allocation: {:?}",
+                zero_memory_chunks.len(), zero_memory_chunks
+            ));
+        }
+        
+        // Check for orphaned access times (chunks in access_times but not in chunk_memory)
+        let orphaned_access_times: Vec<_> = self.chunk_access_times
+            .keys()
+            .filter(|coord| !self.chunk_memory.contains_key(coord))
+            .copied()
+            .collect();
+        
+        if !orphaned_access_times.is_empty() {
+            return Err(format!(
+                "Found {} orphaned access time entries: {:?}",
+                orphaned_access_times.len(), orphaned_access_times
+            ));
+        }
+        
+        // Check for orphaned memory entries (chunks in chunk_memory but not in access_times)
+        let orphaned_memory_entries: Vec<_> = self.chunk_memory
+            .keys()
+            .filter(|coord| !self.chunk_access_times.contains_key(coord))
+            .copied()
+            .collect();
+        
+        if !orphaned_memory_entries.is_empty() {
+            return Err(format!(
+                "Found {} orphaned memory entries: {:?}",
+                orphaned_memory_entries.len(), orphaned_memory_entries
+            ));
+        }
+        
+        Ok(())
+    }
+
+    /// Perform automatic leak detection and cleanup
+    pub fn cleanup_potential_leaks(&mut self, max_idle_duration: std::time::Duration) -> Vec<ChunkCoord> {
+        let potential_leaks = self.detect_potential_leaks(max_idle_duration);
+        let mut cleaned_up = Vec::new();
+        
+        for coord in potential_leaks {
+            if self.unregister_chunk_memory(coord).is_some() {
+                cleaned_up.push(coord);
+            }
+        }
+        
+        cleaned_up
+    }
+
+    /// Set strict memory bounds checking
+    pub fn set_strict_bounds_checking(&mut self, enabled: bool) {
+        // This could be used to enable/disable additional bounds checking
+        // For now, we always perform bounds checking, but this could be extended
+        // to add more expensive validation in debug builds
+    }
+
+    /// Get memory usage per chunk (for debugging and validation)
+    pub fn chunk_memory(&self) -> &HashMap<ChunkCoord, usize> {
+        &self.chunk_memory
+    }
+
+    /// Get chunk access times (for debugging and validation)
+    pub fn chunk_access_times(&self) -> &HashMap<ChunkCoord, Instant> {
+        &self.chunk_access_times
+    }
+
+    /// Get memory fragmentation statistics
+    pub fn fragmentation_stats(&self) -> FragmentationStats {
+        if self.chunk_memory.is_empty() {
+            return FragmentationStats {
+                total_chunks: 0,
+                min_chunk_size: 0,
+                max_chunk_size: 0,
+                average_chunk_size: 0,
+                size_variance: 0.0,
+            };
+        }
+        
+        let sizes: Vec<usize> = self.chunk_memory.values().copied().collect();
+        let min_size = *sizes.iter().min().unwrap();
+        let max_size = *sizes.iter().max().unwrap();
+        let total_size: usize = sizes.iter().sum();
+        let average_size = total_size / sizes.len();
+        
+        // Calculate variance
+        let variance = if sizes.len() > 1 {
+            let sum_squared_diff: f64 = sizes
+                .iter()
+                .map(|&size| {
+                    let diff = size as f64 - average_size as f64;
+                    diff * diff
+                })
+                .sum();
+            sum_squared_diff / sizes.len() as f64
+        } else {
+            0.0
+        };
+        
+        FragmentationStats {
+            total_chunks: sizes.len(),
+            min_chunk_size: min_size,
+            max_chunk_size: max_size,
+            average_chunk_size: average_size,
+            size_variance: variance,
+        }
+    }
 }
 
 /// Statistics about memory usage
@@ -214,6 +367,21 @@ pub struct MemoryStats {
     pub cleanup_threshold: f32,
 }
 
+/// Statistics about memory fragmentation
+#[derive(Debug, Clone)]
+pub struct FragmentationStats {
+    /// Total number of chunks
+    pub total_chunks: usize,
+    /// Minimum chunk size in bytes
+    pub min_chunk_size: usize,
+    /// Maximum chunk size in bytes
+    pub max_chunk_size: usize,
+    /// Average chunk size in bytes
+    pub average_chunk_size: usize,
+    /// Variance in chunk sizes
+    pub size_variance: f64,
+}
+
 impl MemoryStats {
     /// Get available memory in bytes
     pub fn available_memory(&self) -> usize {
@@ -228,5 +396,113 @@ impl MemoryStats {
     /// Get memory pressure level (0.0 = no pressure, 1.0+ = over budget)
     pub fn pressure_level(&self) -> f32 {
         self.usage_fraction / self.cleanup_threshold
+    }
+}
+
+impl FragmentationStats {
+    /// Check if memory is highly fragmented
+    pub fn is_fragmented(&self) -> bool {
+        if self.total_chunks <= 1 {
+            return false;
+        }
+        
+        // Consider fragmented if variance is high relative to average
+        let coefficient_of_variation = (self.size_variance.sqrt() / self.average_chunk_size as f64).abs();
+        coefficient_of_variation > 0.5 // 50% coefficient of variation threshold
+    }
+
+    /// Get the size range (max - min)
+    pub fn size_range(&self) -> usize {
+        self.max_chunk_size.saturating_sub(self.min_chunk_size)
+    }
+
+    /// Get fragmentation score (0.0 = no fragmentation, 1.0 = high fragmentation)
+    pub fn fragmentation_score(&self) -> f32 {
+        if self.total_chunks <= 1 || self.average_chunk_size == 0 {
+            return 0.0;
+        }
+        
+        let coefficient_of_variation = (self.size_variance.sqrt() / self.average_chunk_size as f64).abs();
+        (coefficient_of_variation as f32).min(1.0)
+    }
+}
+
+/// Memory health status levels
+#[derive(Debug, Clone, PartialEq)]
+pub enum MemoryHealthStatus {
+    /// Memory is operating normally
+    Healthy,
+    /// Memory has warnings but is still functional
+    Warning,
+    /// Memory is in critical state and needs immediate attention
+    Critical,
+}
+
+/// Comprehensive memory health report
+#[derive(Debug, Clone)]
+pub struct MemoryHealthReport {
+    /// Overall health status
+    pub status: MemoryHealthStatus,
+    /// Current memory statistics
+    pub memory_stats: MemoryStats,
+    /// Memory fragmentation statistics
+    pub fragmentation_stats: FragmentationStats,
+    /// Number of potential memory leaks detected
+    pub potential_leaks: usize,
+    /// Critical issues that need immediate attention
+    pub issues: Vec<String>,
+    /// Warnings that should be monitored
+    pub warnings: Vec<String>,
+}
+
+impl MemoryHealthReport {
+    /// Check if the memory system is healthy
+    pub fn is_healthy(&self) -> bool {
+        self.status == MemoryHealthStatus::Healthy
+    }
+
+    /// Check if there are any critical issues
+    pub fn has_critical_issues(&self) -> bool {
+        self.status == MemoryHealthStatus::Critical
+    }
+
+    /// Get a summary of all issues and warnings
+    pub fn summary(&self) -> String {
+        let mut summary = format!("Memory Health: {:?}\n", self.status);
+        
+        if !self.issues.is_empty() {
+            summary.push_str("Critical Issues:\n");
+            for issue in &self.issues {
+                summary.push_str(&format!("  - {}\n", issue));
+            }
+        }
+        
+        if !self.warnings.is_empty() {
+            summary.push_str("Warnings:\n");
+            for warning in &self.warnings {
+                summary.push_str(&format!("  - {}\n", warning));
+            }
+        }
+        
+        summary.push_str(&format!(
+            "Memory Usage: {:.1}% ({} / {} bytes)\n",
+            self.memory_stats.usage_fraction * 100.0,
+            self.memory_stats.current_usage,
+            self.memory_stats.total_budget
+        ));
+        
+        if self.fragmentation_stats.total_chunks > 0 {
+            summary.push_str(&format!(
+                "Fragmentation: {:.1}% ({} chunks)\n",
+                self.fragmentation_stats.fragmentation_score() * 100.0,
+                self.fragmentation_stats.total_chunks
+            ));
+        }
+        
+        if self.potential_leaks > 0 {
+            summary.push_str(&format!("Potential Leaks: {}\n", self.potential_leaks));
+        }
+        
+        summary
     }
 }

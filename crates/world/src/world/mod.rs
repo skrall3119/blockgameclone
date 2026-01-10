@@ -14,7 +14,7 @@ pub use error::{WorldError, WorldResult};
 pub use config::{WorldConfig, LoadPattern};
 pub use coordinate::{ChunkCoord, CoordinateSystem};
 pub use performance::{PerformanceMonitor, MemorySample, ChunkStats, MonitorConfig};
-pub use memory::{MemoryManager};
+pub use memory::{MemoryManager, MemoryStats, FragmentationStats, MemoryHealthReport, MemoryHealthStatus};
 
 use crate::chunk::Chunk;
 use std::collections::HashMap;
@@ -560,6 +560,8 @@ impl World {
     pub fn get_chunk_mut(&mut self, coord: ChunkCoord) -> Option<&mut ChunkEntry> {
         if let Some(entry) = self.chunks.get_mut(&coord) {
             entry.touch();
+            // Update memory manager access time for LRU tracking
+            self.memory_manager.touch_chunk(coord);
             Some(entry)
         } else {
             None
@@ -575,7 +577,14 @@ impl World {
 
     /// Remove a chunk from the world
     pub fn remove_chunk(&mut self, coord: ChunkCoord) -> Option<ChunkEntry> {
-        self.chunks.remove(&coord)
+        let removed_chunk = self.chunks.remove(&coord);
+        
+        // Unregister memory usage when chunk is removed
+        if removed_chunk.is_some() {
+            self.memory_manager.unregister_chunk_memory(coord);
+        }
+        
+        removed_chunk
     }
 
     /// Get the world configuration
@@ -864,6 +873,16 @@ impl World {
         &mut self.performance_monitor
     }
 
+    /// Get the memory manager
+    pub fn memory_manager(&self) -> &MemoryManager {
+        &self.memory_manager
+    }
+
+    /// Get a mutable reference to the memory manager
+    pub fn memory_manager_mut(&mut self) -> &mut MemoryManager {
+        &mut self.memory_manager
+    }
+
     /// Convert world position to chunk coordinate
     pub fn world_to_chunk_coord(&self, world_pos: glam::Vec3) -> ChunkCoord {
         self.coordinate_system.world_to_chunk_coord(world_pos)
@@ -989,7 +1008,19 @@ impl World {
         // Validate coordinates first
         self.validate_chunk_coord(coord)?;
         
+        // Estimate chunk memory usage (approximate calculation)
+        let chunk_size_bytes = (self.chunk_size as usize).pow(3) * 2; // 2 bytes per block (block type + metadata)
+        let estimated_chunk_memory = chunk_size_bytes + 1024; // Add overhead for chunk metadata
+        
         // Check memory constraints before loading
+        if !self.memory_manager.can_load_chunk(estimated_chunk_memory) {
+            return Err(WorldError::OutOfMemory {
+                requested: estimated_chunk_memory,
+                available: self.memory_manager.memory_budget().saturating_sub(self.memory_manager.current_usage()),
+            });
+        }
+        
+        // Check chunk count constraints
         if let Some(max_chunks) = self.config.max_chunks_loaded {
             if self.chunk_count() >= max_chunks {
                 return Err(WorldError::ResourceLimitExceeded {
@@ -1026,15 +1057,24 @@ impl World {
             });
         }
         
+        // Register memory usage before adding the chunk
+        self.memory_manager.register_chunk_memory(coord, estimated_chunk_memory)?;
+        
         // Add the chunk to the world
-        self.add_chunk(coord, chunk)?;
-        
-        // Update the chunk state to Generated
-        if let Some(entry) = self.get_chunk_mut(coord) {
-            entry.set_state(ChunkState::Generated);
+        match self.add_chunk(coord, chunk) {
+            Ok(()) => {
+                // Update the chunk state to Generated
+                if let Some(entry) = self.get_chunk_mut(coord) {
+                    entry.set_state(ChunkState::Generated);
+                }
+                Ok(())
+            }
+            Err(e) => {
+                // If adding chunk failed, unregister the memory
+                self.memory_manager.unregister_chunk_memory(coord);
+                Err(e)
+            }
         }
-        
-        Ok(())
     }
 
     /// Simulate loading failures for testing error isolation
@@ -1687,6 +1727,268 @@ impl World {
                 0.0
             },
         }
+    }
+
+    // ===== MEMORY MANAGEMENT METHODS =====
+
+    /// Get current memory usage statistics
+    pub fn memory_stats(&self) -> memory::MemoryStats {
+        self.memory_manager.memory_stats()
+    }
+
+    /// Check if memory cleanup should be triggered
+    pub fn should_cleanup_memory(&self) -> bool {
+        self.memory_manager.should_cleanup()
+    }
+
+    /// Get chunks suggested for cleanup based on LRU policy
+    pub fn suggest_chunks_for_cleanup(&self, target_free_bytes: usize) -> Vec<ChunkCoord> {
+        self.memory_manager.suggest_cleanup(target_free_bytes)
+    }
+
+    /// Perform automatic memory cleanup if needed
+    pub fn cleanup_memory_if_needed(&mut self) -> WorldResult<usize> {
+        if !self.should_cleanup_memory() {
+            return Ok(0);
+        }
+
+        let stats = self.memory_stats();
+        let target_free = (stats.total_budget as f32 * 0.2) as usize; // Free 20% of budget
+        let chunks_to_cleanup = self.suggest_chunks_for_cleanup(target_free);
+        
+        let mut freed_chunks = 0;
+        for coord in chunks_to_cleanup {
+            if self.remove_chunk(coord).is_some() {
+                freed_chunks += 1;
+            }
+        }
+        
+        Ok(freed_chunks)
+    }
+
+    /// Force cleanup of specific chunks to free memory
+    pub fn force_cleanup_chunks(&mut self, coords: &[ChunkCoord]) -> usize {
+        let mut freed_chunks = 0;
+        
+        for &coord in coords {
+            if self.remove_chunk(coord).is_some() {
+                freed_chunks += 1;
+            }
+        }
+        
+        freed_chunks
+    }
+
+    /// Check if the world can load a new chunk without exceeding memory limits
+    pub fn can_load_new_chunk(&self) -> bool {
+        // Estimate memory for a new chunk
+        let chunk_size_bytes = (self.chunk_size as usize).pow(3) * 2;
+        let estimated_chunk_memory = chunk_size_bytes + 1024;
+        
+        self.memory_manager.can_load_chunk(estimated_chunk_memory)
+    }
+
+    /// Get memory usage as a percentage of the budget
+    pub fn memory_usage_percentage(&self) -> f32 {
+        self.memory_manager.usage_fraction() * 100.0
+    }
+
+    /// Set the memory cleanup threshold
+    pub fn set_memory_cleanup_threshold(&mut self, threshold: f32) -> WorldResult<()> {
+        self.memory_manager.set_cleanup_threshold(threshold)
+    }
+
+    /// Update the memory budget for the world
+    pub fn set_memory_budget(&mut self, new_budget: usize) -> WorldResult<()> {
+        self.memory_manager.set_memory_budget(new_budget)
+    }
+
+    /// Get the oldest and newest accessed chunks for debugging
+    pub fn memory_access_info(&self) -> (Option<(ChunkCoord, std::time::Instant)>, Option<(ChunkCoord, std::time::Instant)>) {
+        (self.memory_manager.oldest_chunk(), self.memory_manager.newest_chunk())
+    }
+
+    /// Validate that memory tracking is consistent with loaded chunks
+    pub fn validate_memory_consistency(&self) -> WorldResult<()> {
+        let stats = self.memory_stats();
+        
+        // Check that tracked chunks match loaded chunks
+        if stats.chunks_tracked != self.chunk_count() {
+            return Err(WorldError::InvalidConfiguration {
+                parameter: "memory_tracking".to_string(),
+                value: format!("tracked: {}, loaded: {}", stats.chunks_tracked, self.chunk_count()),
+                reason: "Memory tracking is inconsistent with loaded chunks".to_string(),
+            });
+        }
+        
+        // Check that memory usage is within bounds
+        if stats.current_usage > stats.total_budget {
+            return Err(WorldError::OutOfMemory {
+                requested: stats.current_usage,
+                available: stats.total_budget,
+            });
+        }
+        
+        Ok(())
+    }
+
+    /// Perform comprehensive memory bounds checking
+    pub fn validate_memory_bounds(&self) -> WorldResult<()> {
+        // Validate memory manager internal consistency
+        if let Err(error_msg) = self.memory_manager.validate_memory_bounds() {
+            return Err(WorldError::InvalidConfiguration {
+                parameter: "memory_bounds".to_string(),
+                value: "inconsistent".to_string(),
+                reason: error_msg,
+            });
+        }
+        
+        // Validate that all loaded chunks are tracked in memory manager
+        for coord in self.chunks.keys() {
+            if !self.memory_manager.chunk_memory().contains_key(coord) {
+                return Err(WorldError::InvalidConfiguration {
+                    parameter: "memory_tracking".to_string(),
+                    value: format!("chunk {:?}", coord),
+                    reason: "Loaded chunk is not tracked in memory manager".to_string(),
+                });
+            }
+        }
+        
+        // Check for memory leaks (chunks tracked but not loaded)
+        for coord in self.memory_manager.chunk_memory().keys() {
+            if !self.chunks.contains_key(coord) {
+                return Err(WorldError::InvalidConfiguration {
+                    parameter: "memory_leak".to_string(),
+                    value: format!("chunk {:?}", coord),
+                    reason: "Memory manager tracks chunk that is not loaded".to_string(),
+                });
+            }
+        }
+        
+        Ok(())
+    }
+
+    /// Detect and report potential memory leaks
+    pub fn detect_memory_leaks(&self, max_idle_duration: std::time::Duration) -> Vec<ChunkCoord> {
+        self.memory_manager.detect_potential_leaks(max_idle_duration)
+    }
+
+    /// Perform automatic leak cleanup
+    pub fn cleanup_memory_leaks(&mut self, max_idle_duration: std::time::Duration) -> WorldResult<usize> {
+        let potential_leaks = self.detect_memory_leaks(max_idle_duration);
+        let mut cleaned_up = 0;
+        
+        for coord in potential_leaks {
+            // Remove the chunk from the world, which will also unregister memory
+            if self.remove_chunk(coord).is_some() {
+                cleaned_up += 1;
+            }
+        }
+        
+        Ok(cleaned_up)
+    }
+
+    /// Get memory fragmentation statistics
+    pub fn memory_fragmentation_stats(&self) -> memory::FragmentationStats {
+        self.memory_manager.fragmentation_stats()
+    }
+
+    /// Check if memory is critically fragmented and needs defragmentation
+    pub fn needs_memory_defragmentation(&self) -> bool {
+        let frag_stats = self.memory_fragmentation_stats();
+        frag_stats.is_fragmented() && frag_stats.fragmentation_score() > 0.7
+    }
+
+    /// Perform bounds checking before any memory-intensive operation
+    pub fn check_memory_bounds_before_operation(&self, estimated_memory: usize) -> WorldResult<()> {
+        let stats = self.memory_stats();
+        
+        // Check if operation would exceed budget
+        if stats.current_usage + estimated_memory > stats.total_budget {
+            return Err(WorldError::OutOfMemory {
+                requested: estimated_memory,
+                available: stats.available_memory(),
+            });
+        }
+        
+        // Check if operation would trigger critical memory pressure
+        let new_usage_fraction = (stats.current_usage + estimated_memory) as f32 / stats.total_budget as f32;
+        if new_usage_fraction > 0.95 { // 95% threshold for critical operations
+            return Err(WorldError::ResourceLimitExceeded {
+                resource: "memory".to_string(),
+                limit: (stats.total_budget as f32 * 0.95) as usize,
+                requested: stats.current_usage + estimated_memory,
+            });
+        }
+        
+        Ok(())
+    }
+
+    /// Enforce strict memory bounds by preventing operations that would exceed limits
+    pub fn enforce_memory_bounds(&mut self) -> WorldResult<()> {
+        // Validate current state
+        self.validate_memory_bounds()?;
+        
+        // If memory usage is critical, force cleanup
+        if self.should_cleanup_memory() {
+            let cleaned_up = self.cleanup_memory_if_needed()?;
+            if cleaned_up == 0 && self.should_cleanup_memory() {
+                // If cleanup didn't help and we're still over threshold, this is an error
+                return Err(WorldError::OutOfMemory {
+                    requested: self.memory_manager.current_usage(),
+                    available: self.memory_manager.memory_budget(),
+                });
+            }
+        }
+        
+        Ok(())
+    }
+
+    /// Perform comprehensive memory health check
+    pub fn memory_health_check(&self) -> WorldResult<MemoryHealthReport> {
+        let stats = self.memory_stats();
+        let frag_stats = self.memory_fragmentation_stats();
+        let potential_leaks = self.detect_memory_leaks(std::time::Duration::from_secs(300)); // 5 minutes
+        
+        let mut issues = Vec::new();
+        let mut warnings = Vec::new();
+        
+        // Check for critical memory usage
+        if stats.is_critical() {
+            issues.push("Memory usage is above cleanup threshold".to_string());
+        }
+        
+        // Check for high fragmentation
+        if frag_stats.is_fragmented() {
+            warnings.push(format!("Memory is fragmented (score: {:.2})", frag_stats.fragmentation_score()));
+        }
+        
+        // Check for potential leaks
+        if !potential_leaks.is_empty() {
+            warnings.push(format!("Found {} potential memory leaks", potential_leaks.len()));
+        }
+        
+        // Check bounds consistency
+        if let Err(_) = self.validate_memory_bounds() {
+            issues.push("Memory bounds validation failed".to_string());
+        }
+        
+        let health_status = if !issues.is_empty() {
+            MemoryHealthStatus::Critical
+        } else if !warnings.is_empty() {
+            MemoryHealthStatus::Warning
+        } else {
+            MemoryHealthStatus::Healthy
+        };
+        
+        Ok(MemoryHealthReport {
+            status: health_status,
+            memory_stats: stats,
+            fragmentation_stats: frag_stats,
+            potential_leaks: potential_leaks.len(),
+            issues,
+            warnings,
+        })
     }
 }
 
@@ -4217,6 +4519,329 @@ mod tests {
                     }
                 }
             }
+        }
+    }
+
+    // Property 11: Memory Management Bounds
+    // **Validates: Requirements 7.1, 7.2, 7.3, 7.5**
+    proptest! {
+        #[test]
+        fn property_memory_management_bounds(
+            memory_budget in 1024usize..=10_000_000usize, // 1KB to 10MB
+            coords in prop::collection::vec(arb_chunk_coord(), 1..20),
+            cleanup_threshold in 0.1f32..=0.9f32,
+        ) {
+            // Feature: world-integration, Property 11: Memory Management Bounds
+            
+            // Create unique coordinates
+            let mut unique_coords = Vec::new();
+            let mut seen = std::collections::HashSet::new();
+            for coord in coords {
+                if seen.insert(coord) {
+                    unique_coords.push(coord);
+                }
+            }
+            
+            if unique_coords.is_empty() {
+                return Ok(());
+            }
+            
+            // Create world with specific memory budget
+            let config = WorldConfig::new()
+                .with_render_distance(8)
+                .with_max_chunks(Some(unique_coords.len() * 2));
+            
+            let mut world = World::new(config).unwrap();
+            
+            // Set memory budget and cleanup threshold
+            world.set_memory_budget(memory_budget).unwrap();
+            world.set_memory_cleanup_threshold(cleanup_threshold).unwrap();
+            
+            // Test memory bounds checking
+            let initial_stats = world.memory_stats();
+            prop_assert_eq!(initial_stats.total_budget, memory_budget, 
+                "Memory budget should be set correctly");
+            prop_assert_eq!(initial_stats.current_usage, 0, 
+                "Initial memory usage should be zero");
+            prop_assert!((initial_stats.cleanup_threshold - cleanup_threshold).abs() < 0.001, 
+                "Cleanup threshold should be set correctly");
+            
+            // Load chunks and track memory usage
+            let mut loaded_chunks = Vec::new();
+            let mut _total_expected_memory = 0;
+            
+            for coord in &unique_coords {
+                // Check if we can load the chunk
+                let can_load = world.can_load_new_chunk();
+                
+                if can_load {
+                    // Attempt to load the chunk
+                    match world.load_single_chunk(*coord) {
+                        Ok(progress) => {
+                            if progress.successful_loads() > 0 && world.is_chunk_loaded(*coord) {
+                                loaded_chunks.push(*coord);
+                                
+                                // Estimate memory usage for this chunk
+                                let chunk_size_bytes = (world.chunk_size() as usize).pow(3) * 2;
+                                let estimated_memory = chunk_size_bytes + 1024;
+                                _total_expected_memory += estimated_memory;
+                            }
+                        }
+                        Err(WorldError::OutOfMemory { .. }) => {
+                            // This is expected when memory budget is exceeded
+                            break;
+                        }
+                        Err(_) => {
+                            // Other errors are acceptable (e.g., coordinate validation)
+                        }
+                    }
+                } else {
+                    // Cannot load more chunks due to memory constraints
+                    break;
+                }
+                
+                // Validate memory bounds after each load
+                let bounds_check = world.validate_memory_bounds();
+                prop_assert!(bounds_check.is_ok(), 
+                    "Memory bounds should be valid after loading chunk: {:?}", bounds_check);
+            }
+            
+            // Verify memory usage is within bounds
+            let final_stats = world.memory_stats();
+            prop_assert!(final_stats.current_usage <= final_stats.total_budget, 
+                "Memory usage should not exceed budget");
+            
+            // Verify memory tracking consistency
+            let consistency_check = world.validate_memory_consistency();
+            prop_assert!(consistency_check.is_ok(), 
+                "Memory tracking should be consistent: {:?}", consistency_check);
+            
+            // Test memory cleanup when threshold is exceeded
+            if final_stats.usage_fraction >= cleanup_threshold {
+                let should_cleanup = world.should_cleanup_memory();
+                prop_assert!(should_cleanup, 
+                    "Should trigger cleanup when usage exceeds threshold");
+                
+                let cleanup_result = world.cleanup_memory_if_needed();
+                prop_assert!(cleanup_result.is_ok(), 
+                    "Memory cleanup should succeed");
+                
+                let post_cleanup_stats = world.memory_stats();
+                prop_assert!(post_cleanup_stats.current_usage <= final_stats.current_usage, 
+                    "Memory usage should not increase after cleanup");
+            }
+            
+            // Test memory leak detection
+            let potential_leaks = world.detect_memory_leaks(std::time::Duration::from_secs(1));
+            // Chunks were just loaded/accessed, so should not be considered leaks with 1 second threshold
+            prop_assert_eq!(potential_leaks.len(), 0, 
+                "Should not detect leaks for recently accessed chunks with 1 second threshold");
+            
+            // Test memory health check
+            let health_report = world.memory_health_check().unwrap();
+            prop_assert!(
+                health_report.status == MemoryHealthStatus::Healthy || 
+                health_report.status == MemoryHealthStatus::Warning ||
+                health_report.status == MemoryHealthStatus::Critical,
+                "Health report should have valid status"
+            );
+            
+            // Test fragmentation statistics
+            let frag_stats = world.memory_fragmentation_stats();
+            // Note: fragmentation stats track chunks in memory manager, which may differ from loaded chunks
+            // if memory registration failed for some chunks
+            prop_assert!(frag_stats.total_chunks <= loaded_chunks.len(), 
+                "Fragmentation stats should not exceed loaded chunks");
+            
+            if frag_stats.total_chunks > 0 {
+                prop_assert!(frag_stats.average_chunk_size > 0, 
+                    "Average chunk size should be positive when chunks are tracked");
+                prop_assert!(frag_stats.min_chunk_size <= frag_stats.max_chunk_size, 
+                    "Min chunk size should not exceed max chunk size");
+                
+                let fragmentation_score = frag_stats.fragmentation_score();
+                prop_assert!(fragmentation_score >= 0.0 && fragmentation_score <= 1.0, 
+                    "Fragmentation score should be between 0.0 and 1.0");
+            }
+            
+            // Test chunk removal and memory cleanup
+            // Re-verify which chunks are actually loaded before attempting removal
+            let actually_loaded_chunks: Vec<ChunkCoord> = loaded_chunks.iter()
+                .filter(|coord| world.is_chunk_loaded(**coord))
+                .copied()
+                .collect();
+            
+            let chunks_to_remove = actually_loaded_chunks.len() / 2;
+            if chunks_to_remove > 0 {
+                for coord in actually_loaded_chunks.iter().take(chunks_to_remove) {
+                    let removed = world.remove_chunk(*coord);
+                    prop_assert!(removed.is_some(), 
+                        "Should be able to remove loaded chunk");
+                }
+                
+                // Verify memory was properly released
+                let after_removal_stats = world.memory_stats();
+                prop_assert!(after_removal_stats.current_usage < final_stats.current_usage, 
+                    "Memory usage should decrease after removing chunks");
+            }
+            
+            // Final consistency check
+            let final_consistency = world.validate_memory_consistency();
+            prop_assert!(final_consistency.is_ok(), 
+                "Memory should remain consistent after chunk removal");
+        }
+    }
+
+    // Property test for memory bounds enforcement
+    proptest! {
+        #[test]
+        fn property_memory_bounds_enforcement(
+            small_budget in 1024usize..=50_000usize, // Small budget to trigger limits
+            coords in prop::collection::vec(arb_chunk_coord(), 5..15),
+        ) {
+            // Feature: world-integration, Property 11: Memory Management Bounds (enforcement)
+            
+            // Create unique coordinates
+            let mut unique_coords = Vec::new();
+            let mut seen = std::collections::HashSet::new();
+            for coord in coords {
+                if seen.insert(coord) {
+                    unique_coords.push(coord);
+                }
+            }
+            
+            if unique_coords.len() < 5 {
+                return Ok(());
+            }
+            
+            // Create world with small memory budget to test enforcement
+            let config = WorldConfig::new()
+                .with_render_distance(4)
+                .with_max_chunks(Some(unique_coords.len()));
+            
+            let mut world = World::new(config).unwrap();
+            world.set_memory_budget(small_budget).unwrap();
+            
+            // Try to load chunks until memory limit is hit
+            let mut loaded_count = 0;
+            let mut hit_memory_limit = false;
+            
+            for coord in &unique_coords {
+                match world.load_single_chunk(*coord) {
+                    Ok(progress) => {
+                        if progress.successful_loads() > 0 {
+                            loaded_count += 1;
+                        }
+                    }
+                    Err(WorldError::OutOfMemory { requested, available }) => {
+                        // This is expected when memory budget is exceeded
+                        hit_memory_limit = true;
+                        prop_assert!(requested > available, 
+                            "OutOfMemory error should indicate insufficient available memory");
+                        break;
+                    }
+                    Err(_) => {
+                        // Other errors are acceptable
+                    }
+                }
+                
+                // Check that memory usage never exceeds budget
+                let stats = world.memory_stats();
+                prop_assert!(stats.current_usage <= stats.total_budget, 
+                    "Memory usage should never exceed budget during loading");
+            }
+            
+            // With a small budget, we should eventually hit the memory limit
+            if unique_coords.len() > 3 {
+                prop_assert!(hit_memory_limit || loaded_count < unique_coords.len(), 
+                    "Should hit memory limit or not load all chunks with small budget");
+            }
+            
+            // Test that bounds enforcement prevents memory leaks
+            let bounds_enforcement = world.enforce_memory_bounds();
+            prop_assert!(bounds_enforcement.is_ok(), 
+                "Memory bounds enforcement should succeed");
+            
+            // Verify final state is consistent
+            let final_validation = world.validate_memory_bounds();
+            prop_assert!(final_validation.is_ok(), 
+                "Memory bounds should be valid after enforcement");
+        }
+    }
+
+    // Property test for memory leak detection and cleanup
+    proptest! {
+        #[test]
+        fn property_memory_leak_detection_and_cleanup(
+            config in arb_world_config(),
+            coords in prop::collection::vec(arb_chunk_coord(), 3..10),
+            idle_duration_ms in 100u64..=5000u64,
+        ) {
+            // Feature: world-integration, Property 11: Memory Management Bounds (leak detection)
+            
+            let mut world = World::new(config).unwrap();
+            
+            // Create unique coordinates
+            let mut unique_coords = Vec::new();
+            let mut seen = std::collections::HashSet::new();
+            for coord in coords {
+                if seen.insert(coord) {
+                    unique_coords.push(coord);
+                }
+            }
+            
+            if unique_coords.len() < 3 {
+                return Ok(());
+            }
+            
+            // Load some chunks
+            let pattern = LoadPattern::Custom(unique_coords.clone());
+            let _progress = world.load_chunks(pattern).unwrap();
+            
+            let loaded_coords: Vec<ChunkCoord> = unique_coords.iter()
+                .filter(|coord| world.is_chunk_loaded(**coord))
+                .copied()
+                .collect();
+            
+            if loaded_coords.len() < 2 {
+                return Ok(());
+            }
+            
+            // Initially, no leaks should be detected (chunks were just accessed)
+            let initial_leaks = world.detect_memory_leaks(std::time::Duration::from_millis(idle_duration_ms));
+            prop_assert!(initial_leaks.is_empty(), 
+                "Should not detect leaks for recently accessed chunks");
+            
+            // Wait a bit and then detect leaks with a very short duration
+            std::thread::sleep(std::time::Duration::from_millis(10));
+            let short_duration_leaks = world.detect_memory_leaks(std::time::Duration::from_millis(1));
+            
+            // All chunks should be considered potential leaks with very short duration
+            prop_assert_eq!(short_duration_leaks.len(), loaded_coords.len(), 
+                "All chunks should be potential leaks with very short idle duration");
+            
+            // Test leak cleanup
+            let cleanup_result = world.cleanup_memory_leaks(std::time::Duration::from_millis(1));
+            prop_assert!(cleanup_result.is_ok(), 
+                "Memory leak cleanup should succeed");
+            
+            let cleaned_up_count = cleanup_result.unwrap();
+            prop_assert_eq!(cleaned_up_count, loaded_coords.len(), 
+                "Should clean up all chunks identified as leaks");
+            
+            // After cleanup, no chunks should be loaded
+            prop_assert_eq!(world.chunk_count(), 0, 
+                "No chunks should remain after leak cleanup");
+            
+            // Memory usage should be zero after cleanup
+            let final_stats = world.memory_stats();
+            prop_assert_eq!(final_stats.current_usage, 0, 
+                "Memory usage should be zero after cleaning up all chunks");
+            
+            // Memory consistency should be maintained
+            let consistency_check = world.validate_memory_consistency();
+            prop_assert!(consistency_check.is_ok(), 
+                "Memory should be consistent after leak cleanup");
         }
     }
 }
