@@ -8,6 +8,7 @@ pub mod generation;
 pub mod storage;
 pub mod rendering;
 pub mod world;
+pub mod integration_test;
 
 // Re-export core chunk types for convenience
 pub use chunk::{

@@ -17,6 +17,7 @@ pub use performance::{PerformanceMonitor, MemorySample, ChunkStats, MonitorConfi
 pub use memory::{MemoryManager, MemoryStats, FragmentationStats, MemoryHealthReport, MemoryHealthStatus};
 
 use crate::chunk::Chunk;
+use crate::generation::terrain::TerrainGenerator;
 use std::collections::HashMap;
 use std::time::Instant;
 use glam::Vec3;
@@ -521,11 +522,18 @@ pub struct World {
     memory_manager: MemoryManager,
     /// Coordinate system for transformations
     coordinate_system: CoordinateSystem,
+    /// Terrain generator for procedural world generation
+    terrain_generator: TerrainGenerator,
 }
 
 impl World {
     /// Create a new world with the given configuration
     pub fn new(config: WorldConfig) -> WorldResult<Self> {
+        Self::new_with_seed(config, None)
+    }
+
+    /// Create a new world with the given configuration and optional seed
+    pub fn new_with_seed(config: WorldConfig, seed: Option<u64>) -> WorldResult<Self> {
         let chunk_size = 32; // Default chunk size, could be configurable
         let coordinate_system = CoordinateSystem::new(chunk_size);
         let performance_monitor = PerformanceMonitor::new(MonitorConfig::default());
@@ -536,6 +544,23 @@ impl World {
         let memory_budget_mb = base_memory_mb + (max_chunks * per_chunk_memory_mb);
         let memory_manager = MemoryManager::new(memory_budget_mb * 1024 * 1024);
 
+        // Initialize terrain generator with seed
+        let terrain_seed = seed.unwrap_or_else(|| {
+            use std::collections::hash_map::DefaultHasher;
+            use std::hash::{Hash, Hasher};
+            use std::time::{SystemTime, UNIX_EPOCH};
+            
+            // Generate a random seed based on current time if none provided
+            let mut hasher = DefaultHasher::new();
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos()
+                .hash(&mut hasher);
+            hasher.finish()
+        });
+        let terrain_generator = TerrainGenerator::new(terrain_seed);
+
         Ok(Self {
             chunks: HashMap::new(),
             config,
@@ -543,6 +568,7 @@ impl World {
             performance_monitor,
             memory_manager,
             coordinate_system,
+            terrain_generator,
         })
     }
 
@@ -595,6 +621,16 @@ impl World {
     /// Get the world configuration
     pub fn config(&self) -> &WorldConfig {
         &self.config
+    }
+
+    /// Get a reference to the terrain generator
+    pub fn terrain_generator(&self) -> &TerrainGenerator {
+        &self.terrain_generator
+    }
+
+    /// Get the seed used by the terrain generator
+    pub fn get_terrain_seed(&self) -> u64 {
+        self.terrain_generator.get_seed()
     }
 
     /// Update the world configuration dynamically
@@ -1008,7 +1044,7 @@ impl World {
 
     /// Generate and load a single chunk at the specified coordinates
     fn generate_and_load_chunk(&mut self, coord: ChunkCoord) -> WorldResult<()> {
-        use crate::chunk::{Chunk, ChunkDimensions, ChunkPosition};
+        use crate::chunk::{ChunkDimensions, ChunkPosition};
         
         // Validate coordinates first
         self.validate_chunk_coord(coord)?;
@@ -1037,25 +1073,19 @@ impl World {
         }
         
         // Create a new chunk with appropriate dimensions
-        let chunk_position = ChunkPosition {
+        let _chunk_position = ChunkPosition {
             x: coord.x,
             z: coord.z,
         };
-        let chunk_dimensions = ChunkDimensions {
+        
+        let _chunk_dimensions = ChunkDimensions {
             width: self.chunk_size as usize,
             height: self.chunk_size as usize,
             depth: self.chunk_size as usize,
         };
         
-        // Generate the chunk (this would normally involve terrain generation)
-        // Wrap chunk creation in error handling
-        let mut chunk = match Chunk::new(chunk_position, chunk_dimensions) {
-            chunk => chunk, // Chunk::new doesn't return Result, but we simulate error handling
-        };
-        
-        // For testing purposes, populate the chunk with some blocks
-        // In a real implementation, this would be actual terrain generation
-        self.populate_test_chunk(&mut chunk, coord);
+        // Generate the chunk using terrain generation
+        let chunk = self.terrain_generator.generate_chunk(coord);
         
         // Simulate potential loading failures for testing error isolation
         // In a real implementation, this would be actual terrain generation that could fail
@@ -1150,8 +1180,6 @@ impl World {
 
     /// Generate and load a single chunk with error simulation for testing
     fn generate_and_load_chunk_with_error_simulation(&mut self, coord: ChunkCoord) -> WorldResult<()> {
-        use crate::chunk::{Chunk, ChunkDimensions, ChunkPosition};
-        
         // Validate coordinates first
         self.validate_chunk_coord(coord)?;
         
@@ -1166,31 +1194,16 @@ impl World {
             }
         }
         
-        // Create a new chunk with appropriate dimensions
-        let chunk_position = ChunkPosition {
-            x: coord.x,
-            z: coord.z,
-        };
-        let chunk_dimensions = ChunkDimensions {
-            width: self.chunk_size as usize,
-            height: self.chunk_size as usize,
-            depth: self.chunk_size as usize,
-        };
-        
-        // Generate the chunk (this would normally involve terrain generation)
-        // Wrap chunk creation in error handling
-        let chunk = match Chunk::new(chunk_position, chunk_dimensions) {
-            chunk => chunk, // Chunk::new doesn't return Result, but we simulate error handling
-        };
-        
-        // Simulate potential loading failures for testing error isolation
-        // In a real implementation, this would be actual terrain generation that could fail
+        // Simulate loading failure before generation for testing
         if self.should_simulate_loading_failure_for_error_test(coord) {
             return Err(WorldError::LoadingFailed {
                 coord,
-                reason: "Simulated loading failure for testing".to_string(),
+                reason: "Simulated loading failure for error isolation testing".to_string(),
             });
         }
+        
+        // Generate the chunk using terrain generation
+        let chunk = self.terrain_generator.generate_chunk(coord);
         
         // Add the chunk to the world
         self.add_chunk(coord, chunk)?;

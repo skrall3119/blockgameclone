@@ -10,8 +10,42 @@ use winit::{
     dpi::PhysicalSize,
 };
 
+mod terrain_generation_example;
+mod world_integration_example;
+
 fn main() -> Result<()> {
     env_logger::init();
+    
+    // Check command line arguments for example selection
+    let args: Vec<String> = std::env::args().collect();
+    
+    if args.len() > 1 {
+        match args[1].as_str() {
+            "terrain" => {
+                info!("Running terrain generation example...");
+                return terrain_generation_example::run_terrain_generation_example();
+            }
+            "world" => {
+                info!("Running world integration example...");
+                return pollster::block_on(world_integration_example::run_world_integration_example());
+            }
+            "help" | "--help" | "-h" => {
+                println!("Voxel Game Examples");
+                println!("Usage: cargo run [example]");
+                println!();
+                println!("Available examples:");
+                println!("  terrain  - Terrain generation demonstration");
+                println!("  world    - World integration demonstration");
+                println!("  (none)   - Run main voxel game application");
+                return Ok(());
+            }
+            _ => {
+                println!("Unknown example: {}", args[1]);
+                println!("Use 'cargo run help' to see available examples.");
+                return Ok(());
+            }
+        }
+    }
     
     info!("Starting voxel game...");
     

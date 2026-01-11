@@ -78,3 +78,11 @@ path = "src/single_chunk_example.rs"
 [[bin]]
 name = "world-integration-example"
 path = "src/world_integration_example.rs"
+
+[[bin]]
+name = "terrain-generation-example"
+path = "src/terrain_generation_example.rs"
+
+[[bin]]
+name = "extreme-coordinate-test"
+path = "src/extreme_coordinate_test.rs"
