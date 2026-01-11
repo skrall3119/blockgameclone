@@ -74,3 +74,7 @@ path = "src/main.rs"
 [[bin]]
 name = "single-chunk-example"
 path = "src/single_chunk_example.rs"
+
+[[bin]]
+name = "world-integration-example"
+path = "src/world_integration_example.rs"
