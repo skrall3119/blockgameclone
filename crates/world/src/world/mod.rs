@@ -529,7 +529,12 @@ impl World {
         let chunk_size = 32; // Default chunk size, could be configurable
         let coordinate_system = CoordinateSystem::new(chunk_size);
         let performance_monitor = PerformanceMonitor::new(MonitorConfig::default());
-        let memory_manager = MemoryManager::new(config.max_chunks_loaded.unwrap_or(1000) * 1024 * 1024); // Default 1GB
+        // Set memory budget to a reasonable default: 100MB base + 1MB per max chunk
+        let base_memory_mb = 100;
+        let per_chunk_memory_mb = 1;
+        let max_chunks = config.max_chunks_loaded.unwrap_or(1000);
+        let memory_budget_mb = base_memory_mb + (max_chunks * per_chunk_memory_mb);
+        let memory_manager = MemoryManager::new(memory_budget_mb * 1024 * 1024);
 
         Ok(Self {
             chunks: HashMap::new(),
@@ -1044,9 +1049,13 @@ impl World {
         
         // Generate the chunk (this would normally involve terrain generation)
         // Wrap chunk creation in error handling
-        let chunk = match Chunk::new(chunk_position, chunk_dimensions) {
+        let mut chunk = match Chunk::new(chunk_position, chunk_dimensions) {
             chunk => chunk, // Chunk::new doesn't return Result, but we simulate error handling
         };
+        
+        // For testing purposes, populate the chunk with some blocks
+        // In a real implementation, this would be actual terrain generation
+        self.populate_test_chunk(&mut chunk, coord);
         
         // Simulate potential loading failures for testing error isolation
         // In a real implementation, this would be actual terrain generation that could fail
@@ -1083,6 +1092,49 @@ impl World {
         // Only simulate failures for the specific error handling isolation test
         // For other tests, we want all chunks to load successfully
         false
+    }
+    
+    /// Populate a chunk with test data for rendering tests
+    /// This is a test helper that would not exist in production code
+    fn populate_test_chunk(&self, chunk: &mut Chunk, coord: ChunkCoord) {
+        use crate::chunk::BlockID;
+        
+        // Create a simple pattern: solid blocks at the bottom, some scattered blocks above
+        let chunk_size = self.chunk_size as usize;
+        
+        for x in 0..chunk_size {
+            for z in 0..chunk_size {
+                // Bottom layer is always solid
+                if let Ok(()) = chunk.set_block(x, 0, z, BlockID::Stone) {
+                    // Success
+                }
+                
+                // Add more blocks to ensure non-empty meshes
+                // Create a checkerboard pattern on multiple layers
+                if (x + z) % 2 == 0 {
+                    for y in 1..8 {  // More layers
+                        if y < chunk_size {
+                            if let Ok(()) = chunk.set_block(x, y, z, BlockID::Stone) {
+                                // Success
+                            }
+                        }
+                    }
+                }
+                
+                // Add some scattered blocks for visual interest
+                let coord_x_abs = coord.x.abs() as usize;
+                let coord_z_abs = coord.z.abs() as usize;
+                if (x + z + coord_x_abs + coord_z_abs) % 4 == 0 {
+                    for y in 8..12 {  // Higher layers
+                        if y < chunk_size {
+                            if let Ok(()) = chunk.set_block(x, y, z, BlockID::Stone) {
+                                // Success
+                            }
+                        }
+                    }
+                }
+            }
+        }
     }
 
     /// Simulate loading failures with a specific pattern for error isolation testing

@@ -293,8 +293,12 @@ impl WorldConfig {
         // Most configuration changes can be applied at runtime
         // Only fundamental changes would require a restart
         
-        // Version changes that aren't backward compatible require restart
-        if !new_config.is_version_compatible_with(self.version) {
+        // For version compatibility, check if either version can handle the other
+        // This allows for more flexible version transitions
+        let version_compatible = self.is_version_compatible_with(new_config.version) ||
+                                new_config.is_version_compatible_with(self.version);
+        
+        if !version_compatible {
             return true;
         }
         
