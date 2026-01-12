@@ -1,8 +1,6 @@
-//! Debug UI system for player state visualization
+//! Debug UI system for player information display
 //!
 //! This module will contain the DebugUI struct and related functionality
-//! for displaying player position, velocity, and diagnostic information.
-//! 
-//! Implementation will be added in subsequent tasks.
+//! for displaying player debug information. This is a placeholder for future implementation.
 
-// Placeholder - implementation will be added in task 7
+// Placeholder for future implementation in later tasks

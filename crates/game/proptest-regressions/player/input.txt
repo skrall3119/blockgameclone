@@ -1,0 +1,7 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc b5af27d7389c0996ddb8da320f65504a3e53148b0fb325c71ebb15cdeb648336 # shrinks to camera_yaw = 0.0, camera_pitch = 50.20269, w_pressed = true, a_pressed = false, s_pressed = false, d_pressed = false

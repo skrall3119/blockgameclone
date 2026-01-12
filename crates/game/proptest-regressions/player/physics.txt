@@ -1,0 +1,11 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc a538fbccdd7d81a9b23e5f97eb20080dd97471f91dc9e59de1f0934ad27524cb # shrinks to initial_position_x = 0.0, initial_position_y = 0.0, initial_position_z = 0.0, initial_velocity_x = 0.0, initial_velocity_y = 0.0, initial_velocity_z = 0.0, gravity = 54.30075, jump_strength = 5.0, terminal_velocity = 50.0, delta_time = 0.001, num_frames = 1
+cc 7867bd9d23862773b82e1b309ea12394a69734c917403c26853278db5d8ae784 # shrinks to player_x = 0.0, player_y = 0.5, player_z = 0.0, ground_level = 0, ground_size = 1, height_above_ground = 0.29832724
+cc 8ad5f082698484fe534816b6239f7b3a4e4a981dce05c18bd22fffcf11b93460 # shrinks to player_x = 0.0, player_y = 0.5, player_z = 0.0, ground_level = 0, ground_size = 1, height_above_ground = 1.0428063
+cc a16fae94b2ffc10f6691adc284dfe5571db26428b31e45969b547090e61f8d68 # shrinks to player_x = 0.0, player_y = 0.5, player_z = 0.0, ground_level = 0, ground_size = 1, height_above_ground = 2.8097062
+cc 43f701474e543a79e0eaccc2a4ffd88d5c0065e581ab12abf14ce7e038d7ae8f # shrinks to initial_height = 10.0, initial_velocity_y = 0.0, gravity = 10.0, terminal_velocity = 20.0, delta_time = 0.001

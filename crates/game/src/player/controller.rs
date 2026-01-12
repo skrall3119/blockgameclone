@@ -1,8 +1,6 @@
-//! Main player controller implementation
+//! Main player controller coordinating all systems
 //!
 //! This module will contain the main PlayerController struct that coordinates
-//! all player systems including camera, physics, input, and debug UI.
-//! 
-//! Implementation will be added in subsequent tasks.
+//! camera, physics, input, and debug systems. This is a placeholder for future implementation.
 
-// Placeholder - implementation will be added in task 8
+// Placeholder for future implementation in later tasks
